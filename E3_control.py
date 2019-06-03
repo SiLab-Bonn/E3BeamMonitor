@@ -6,17 +6,17 @@ from basil.dut import Dut
 from pyBAR.pybar.fei4_run_base import Fei4RunBase
 from pyBAR.pybar.run_manager import RunManager
 from pyBAR.pybar.scans.tune_gdac import GdacTuning
-from pybar.scans.tune_tdac import TdacTuning
-from pybar.scans.scan_threshold import ThresholdScan
-from pybar.scans.scan_analog import AnalogScan
-from pybar.scans.scan_digital import DigitalScan
+from pyBAR.pybar.scans.tune_tdac import TdacTuning
+from pyBAR.pybar.scans.scan_threshold import ThresholdScan
+from pyBAR.pybar.scans.scan_analog import AnalogScan
+from pyBAR.pybar.scans.scan_digital import DigitalScan
 import json
-from pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
-from pybar.scans.tune_stuck_pixel import StuckPixelTuning
-from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
+from pyBAR.pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
+from pyBAR.pybar.scans.tune_stuck_pixel import StuckPixelTuning
+from pyBAR.pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
 import time
-from pybar.analysis.analyze_raw_data import AnalyzeRawData
-from pybar.daq.readout_utils import build_events_from_raw_data, is_trigger_word, get_trigger_data, is_data_record
+from pyBAR.pybar.analysis.analyze_raw_data import AnalyzeRawData
+from pyBAR.pybar.daq.readout_utils import build_events_from_raw_data, is_trigger_word, get_trigger_data, is_data_record
 from matplotlib import pyplot as plt
 
 
