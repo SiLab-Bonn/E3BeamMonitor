@@ -3,21 +3,22 @@
 import zmq
 import logging
 from basil.dut import Dut
-from pyBAR.pybar.fei4_run_base import Fei4RunBase
-from pyBAR.pybar.run_manager import RunManager
-from pyBAR.pybar.scans.tune_gdac import GdacTuning
-from pyBAR.pybar.scans.tune_tdac import TdacTuning
-from pyBAR.pybar.scans.scan_threshold import ThresholdScan
-from pyBAR.pybar.scans.scan_analog import AnalogScan
-from pyBAR.pybar.scans.scan_digital import DigitalScan
+from pybar.fei4_run_base import Fei4RunBase
+from pybar.run_manager import RunManager
+from pybar.scans.tune_gdac import GdacTuning
+from pybar.scans.tune_tdac import TdacTuning
+from pybar.scans.scan_analog import AnalogScan
+from pybar.scans.scan_digital import DigitalScan
 import json
-from pyBAR.pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
-from pyBAR.pybar.scans.tune_stuck_pixel import StuckPixelTuning
-from pyBAR.pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
+from pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
+from pybar.scans.tune_stuck_pixel import StuckPixelTuning
+from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
 import time
-from pyBAR.pybar.analysis.analyze_raw_data import AnalyzeRawData
-from pyBAR.pybar.daq.readout_utils import build_events_from_raw_data, is_trigger_word, get_trigger_data, is_data_record
+from pybar.analysis.analyze_raw_data import AnalyzeRawData
+from pybar.daq.readout_utils import build_events_from_raw_data, is_trigger_word, get_trigger_data, is_data_record
 from matplotlib import pyplot as plt
+import numpy as np
+from basil.utils.BitLogic import BitLogic
 
 
 conf = {
@@ -32,7 +33,7 @@ socket.connect("tcp://127.0.0.1:%s" % conf["Port"])
 #poller.register(socket, zmq.POLLIN)
 
 try:
-    from pybar.scans.power_supply import power_off, power_on, voltage_channel1, voltage_channel2
+    from power_supply import power_off, power_on, voltage_channel1, voltage_channel2
 #     if RuntimeError:      #Error if the program starts before TTi initialized 
 #         socket.send("Failed to connect to TTi")
 except (SystemExit, ):
@@ -44,7 +45,7 @@ except Exception:
 
 
    
-runmngr = RunManager("configuration.yaml")
+runmngr = RunManager("/home/rasmus/git/pyBAR/pybar/configuration.yaml")
 
 run_conf = {"scan_timeout": None,
           "reset_rx_on_error": False}
@@ -59,7 +60,30 @@ def handle_data(cls, data, new_file=False, flush=True):
 #         analyze_raw_data.plot_histograms()
     print data
     
-    
+def daq(word):
+    if is_data_record(word):
+        record_rawdata = int(word)
+        record_word = BitLogic.from_value(value=record_rawdata, size=32)
+        tot2 = record_word[3:0].tovalue() #find TOT2
+        tot1 = record_word[7:4].tovalue() #find TOT1
+        if tot1<14:
+            row = record_word[16:8].tovalue()
+            coloumn = record_word[23:17].tovalue()
+            x.append(row)
+            y.append(coloumn)
+        if tot2<14:
+            row = record_word[16:8].tovalue()+1
+            coloumn = record_word[23:17].tovalue()
+            x.append(row)
+            y.append(coloumn)
+    else:
+        return 0  
+    #print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
+                
+#     plt.hist2d(x,y)
+#     plt.show()
+
+
 
 def get_status():
     if runmngr.current_run:
@@ -180,15 +204,71 @@ def main():
 
     
 if __name__ == "__main__":
-    main()
+    #main()
     import tables as tb
     from pybar.daq.fei4_record import FEI4Record
-     
-    #rep = Replay()
+    
+    from Replay import Replay    
+    x=[]
+    y=[]
+    t=0
+    
+    rep = Replay()
     for ro in rep.get_data(r"/home/rasmus/git/pyBAR/pybar/data2/module_0/6_module_0_noise_occupancy_tuning.h5"):
- 
-        with tb.open_file(r"/home/rasmus/git/pyBAR/pybar/data2/module_0/6_module_0_noise_occupancy_tuning.h5") as in_file:
-            for word in in_file.root.raw_data:
-                print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
+        print ro
+                        # w/ daq = 100x w/o daq (runtime)
+        i=0
+        t+=1
+        while i<3474:
+            i+=1
+        #    daq(ro[0][i])
+        if t>50:
+            break
+        
+    plt.hist2d(x,y)
+    plt.show()
 
 
+
+
+
+#     with tb.open_file(r"/home/rasmus/git/pyBAR/pybar/data2/module_0/7_module_0_fei4_self_trigger_scan.h5") as in_file:
+#         for word in in_file.root.raw_data:
+#             print word
+            #print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
+        
+
+        
+
+
+#     with tb.open_file(r"/home/rasmus/git/pyBAR/pybar/data2/module_0/7_module_0_fei4_self_trigger_scan.h5") as in_file:
+#         for word in in_file.root.raw_data:
+#             word=ro[0][2]
+#             if is_data_record(word):
+#                 t+=1
+#                 record_rawdata = int(word)
+#                 record_word = BitLogic.from_value(value=record_rawdata, size=32)
+#                 tot2 = record_word[3:0].tovalue() #findet TOT2
+#                 tot1 = record_word[7:4].tovalue() #findet TOT1
+#                 if tot1<14:
+#                     row = record_word[16:8].tovalue()
+#                     coloumn = record_word[23:17].tovalue()
+#   
+#                     x.append(row)
+#                     y.append(coloumn)
+#                 elif tot2<14:
+#                     row = record_word[16:8].tovalue()+1
+#                     coloumn = record_word[23:17].tovalue()
+#                     x.append(row)
+#                     y.append(coloumn)
+#               
+#                 else:
+#                     continue    
+#                 #print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
+#                   
+#             if t>5:
+#                 break
+#      
+#   
+#     plt.hist2d(x,y)
+#     plt.show()
