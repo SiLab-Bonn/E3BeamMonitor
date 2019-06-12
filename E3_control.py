@@ -15,12 +15,21 @@ from pybar.scans.tune_stuck_pixel import StuckPixelTuning
 from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
 import time
 from pybar.analysis.analyze_raw_data import AnalyzeRawData
-from pybar.daq.readout_utils import build_events_from_raw_data, is_trigger_word, get_trigger_data, is_data_record, get_col_row_array_from_data_record_array
+from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array, build_events_from_raw_data, is_data_header, is_trigger_word,\
+    get_trigger_data
 from matplotlib import pyplot as plt
 import numpy as np
 from basil.utils.BitLogic import BitLogic
 from pybar_fei4_interpreter import analysis_utils as fast_analysis_utils
 from tqdm import tqdm
+import pybar.analysis.analysis_utils as anlysis_utils
+from outliers import smirnov_grubbs as grubbs
+from scipy.signal._peak_finding import find_peaks
+from pixel_clusterizer.clusterizer import HitClusterizer
+from pixel_clusterizer.cluster_functions import _cluster_hits
+from numpy import argmax
+from pybar.utils.utils import argmax_list
+from pybar.analysis.analysis_utils import get_hits_in_events
 
 conf = {
     "Port":5000,
@@ -35,8 +44,6 @@ socket.connect("tcp://127.0.0.1:%s" % conf["Port"])
 
 try:
     from power_supply import power_off, power_on, voltage_channel1, voltage_channel2
-#     if RuntimeError:      #Error if the program starts before TTi initialized 
-#         socket.send("Failed to connect to TTi")
 except (SystemExit,):
     raise
 except Exception:
@@ -57,23 +64,23 @@ def handle_data(cls, data, new_file=False, flush=True):
     print data
 
     
-def daq(word):
-        record_rawdata = int(word)
-        record_word = BitLogic.from_value(value=record_rawdata, size=32)
-        tot2 = record_word[3:0].tovalue()  # find TOT2
-        tot1 = record_word[7:4].tovalue()  # find TOT1
-        if tot1 < 14:
-            row = record_word[16:8].tovalue()
-            coloumn = record_word[23:17].tovalue()
-            x.append(row)
-            y.append(coloumn)
-        if tot2 < 14:
-            row = record_word[16:8].tovalue() + 1
-            coloumn = record_word[23:17].tovalue()
-            x.append(row)
-            y.append(coloumn)
-        else:
-            return 0  
+# def daq(word):
+#         record_rawdata = int(word)
+#         record_word = BitLogic.from_value(value=record_rawdata, size=32)
+#         tot2 = record_word[3:0].tovalue()  # find TOT2
+#         tot1 = record_word[7:4].tovalue()  # find TOT1
+#         if tot1 < 14:
+#             row = record_word[16:8].tovalue()
+#             coloumn = record_word[23:17].tovalue()
+#             x.append(row)
+#             y.append(coloumn)
+#         if tot2 < 14:
+#             row = record_word[16:8].tovalue() + 1
+#             coloumn = record_word[23:17].tovalue()
+#             x.append(row)
+#             y.append(coloumn)
+#         else:
+#             return 0  
     # print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
                 
 #     plt.hist2d(x,y)
@@ -125,7 +132,7 @@ def main():
             
         if get_status() == "RUNNING" and msg == "STOP":
             runmngr.cancel_current_run(msg)
-            socket.send("Current Run Stopped")
+            socket.send("%s Run Stopped" % runmngr.current_run.run_id)
     
         if msg == "exit":
             if runmngr:
@@ -187,53 +194,115 @@ def main():
     #    else:
     #        socket.send("invalid input")
 
+
 #@profile
 def analyze():
-    # main()
     import tables as tb
     from pybar.daq.fei4_record import FEI4Record
     
     from Replay import Replay    
     hist_occ = None
-    hits=[]
-
+    hits = []
+    base = []
     rep = Replay()
+    #anlysis_utils.get_rate_normalization("/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5",'event',plot=True)
     for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5", real_time=False))):       
         raw_data = ro[0]
         sel = is_data_record(raw_data)
-        # print "{0:b}".format(ro[0]), FEI4Record(ro[0], chip_flavor="fei4b"), is_data_record(ro[0])
+        trig = is_data_header(raw_data)
+
+#         record_rawdata = int(raw_data[0])
+#         record_word = BitLogic.from_value(value=record_rawdata, size=32)
+        #print ('lvl1id', record_word[14:10].tovalue()), ('bcid', record_word[9:0].tovalue())
+        
+        events = build_events_from_raw_data(raw_data)
+        #print raw_events
+        print get_hits_in_events(raw_data,events)
+        
+        
+
+        print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])        
+        #print is_trigger_word(raw_data[sel])
+        
+        #print len(raw_data[sel])
+        
+        # print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])
+
+        hits.append(len(raw_data[sel]))
         if np.any(sel):
-            col, row = get_col_row_array_from_data_record_array(raw_data[sel])
-            hits.append(len(col))
             
-            if len(col)>1.3*np.mean(hits):
-                print "\n",len(col)/np.mean(hits)
-                print len(hits)
-                #hitrate=True
+            col, row = get_col_row_array_from_data_record_array(raw_data[sel])
+
+            #Nach Grubbs Ausreisserprinzip 
+#             if len(raw_data[sel])>50000:
+#                 base.append(len(raw_data[sel]))
+#                 #base=grubbs.test(base, alpha=0.3)
+#                 w = grubbs.max_test_indices(base, alpha=0.0000000001)
+#                 v = grubbs.max_test_outliers(base, alpha=0.0000000001)
+
+            #Baseline bestimmung mit mittelwert
+            if len(raw_data[sel])>50000:                      #Hitrate Baseline 
+                base.append(len(raw_data[sel]))
+                b=np.mean(base)
+                if len(raw_data[sel])>1.1*b:                  #Hitrate Peak
+                    print "\n",len(raw_data[sel])/b       
+                    print len(hits)
+            
+            
+            
+                                      
             if not np.any(hist_occ):
                 hist_occ = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
 
             else:
                 hist_occ += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
-
             
         
 #         if i > 100000:
 #             break
     
-    return hist_occ ,hits
+#     print w
+#     print v
+    
+      
+    return hist_occ, hits
     
 if __name__ == "__main__":
     
     hist_occ, hits = analyze()
-        
-    #plt.imshow(hist_occ, vmax=100)
+    
+    
+    #Plot Data
+#     plt.imshow(hist_occ, vmax=100)
+#     #print type(hist_occ)
+#     
+#     #Plot Contour Plot of Data
+#     fig, ax = plt.subplots()
+#     CS = ax.contour(hist_occ)
+#     ax.grid(linewidth=0.5)
+    
+#     max=np.argwhere(hist_occ == hist_occ.max())
+#     print max
+    
+#     flat=hist_occ.flatten()
+#     peaks, _ = find_peaks(flat, 300 )
+#     peaks2, _ = find_peaks(flat[peaks])
+    
+#     plt.plot(flat[peaks])
+#     plt.plot(peaks,flat[peaks],"x")
+    
+    #Plot Hitrate of Data
     plt.plot(hits)
-    plt.axis([-80, 800,np.min(0), np.max(80000)])
+    plt.axis([-80, 800,np.min(0), np.max(60000)])
+    
+    #[mean(row), mean(col), sqrt(var(row)), sqrt(var(col))]
+    #[16.84588441330998, 198.79159369527144, 10.51230934121584, 32.733338555313495]
+    #[29.822861430715356, 292.3768134067034, 13.348675259436764, 24.562049075313105]
+    
     plt.show()
                  
 
 #     with tb.open_file(r"/home/rasmus/git/pyBAR/pybar/data2/module_0/7_module_0_fei4_self_trigger_scan.h5") as in_file:
 #         for word in in_file.root.raw_data:
 #             print word
-            # print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
+#             print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
