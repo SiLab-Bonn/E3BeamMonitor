@@ -3,33 +3,35 @@
 import zmq
 import logging
 from basil.dut import Dut
-from pybar.fei4_run_base import Fei4RunBase
 from pybar.run_manager import RunManager
 from pybar.scans.tune_gdac import GdacTuning
 from pybar.scans.tune_tdac import TdacTuning
 from pybar.scans.scan_analog import AnalogScan
 from pybar.scans.scan_digital import DigitalScan
-import json
 from pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
 from pybar.scans.tune_stuck_pixel import StuckPixelTuning
 from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
 import time
 from pybar.analysis.analyze_raw_data import AnalyzeRawData
-from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array, build_events_from_raw_data, is_data_header, is_trigger_word,\
+from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array, build_events_from_raw_data, is_data_header, is_trigger_word, \
     get_trigger_data
 from matplotlib import pyplot as plt
 import numpy as np
 from basil.utils.BitLogic import BitLogic
 from pybar_fei4_interpreter import analysis_utils as fast_analysis_utils
 from tqdm import tqdm
-import pybar.analysis.analysis_utils as anlysis_utils
-from outliers import smirnov_grubbs as grubbs
-from scipy.signal._peak_finding import find_peaks
-from pixel_clusterizer.clusterizer import HitClusterizer
-from pixel_clusterizer.cluster_functions import _cluster_hits
-from numpy import argmax
-from pybar.utils.utils import argmax_list
-from pybar.analysis.analysis_utils import get_hits_in_events
+import math
+
+
+from pybar_fei4_interpreter.data_interpreter import PyDataInterpreter
+from pybar_fei4_interpreter.data_histograming import PyDataHistograming
+from matplotlib.pyplot import axis
+from pybar.utils.utils import argmax
+from numpy import mean
+from zmq.backend.cython.constants import NOBLOCK
+
+
+
 
 conf = {
     "Port":5000,
@@ -39,8 +41,8 @@ context = zmq.Context()
 socket = context.socket(zmq.PAIR)
 socket.connect("tcp://127.0.0.1:%s" % conf["Port"])
 
-# poller = zmq.Poller()
-# poller.register(socket, zmq.POLLIN)
+poller = zmq.Poller()
+poller.register(socket, zmq.POLLIN)
 
 try:
     from power_supply import power_off, power_on, voltage_channel1, voltage_channel2
@@ -56,12 +58,6 @@ run_conf = {"scan_timeout": None,
           "reset_rx_on_error": False}
 
 
-def handle_data(cls, data, new_file=False, flush=True):
-    
-#     with AnalyzeRawData(create_pdf=False) as analyze_raw_data:
-#         analyze_raw_data.create_source_scan_hist = True
-#         analyze_raw_data.plot_histograms()
-    print data
 
     
 # def daq(word):
@@ -128,7 +124,6 @@ def main():
             time.sleep(1)
             status = get_status()
             socket.send(status)
-            # runmngr.current_run.connect_cancel([add_done_message])
             
         if get_status() == "RUNNING" and msg == "STOP":
             runmngr.cancel_current_run(msg)
@@ -172,11 +167,6 @@ def main():
         if msg == "status":
             # socket.send_string("voltage channel 1 = %s" %voltage_channel1())
             # socket.send_string("voltage channel 2 = %s" %voltage_channel2())   
-            # join = runmngr.run_run(run=AnalogScan, run_conf={"scan_parameters": [('PlsrDAC', 280)], "n_injections": 200}, use_thread=True)  
-            # status = join()
-            # print 'Status:', status
-            # status=json.dumps(run_status)
-            # logging.info("%s" % status)
             status = get_status()
             if status == None:
                 socket.send("Status=None")
@@ -202,107 +192,147 @@ def analyze():
     
     from Replay import Replay    
     hist_occ = None
-    hits = []
+    rHit = []           #make rHit global varable?
     base = []
+    c=[]
+    r=[]
+    timestamp = None
+    
+#     with tb.open_file(r"/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5") as in_file:
+#         print (in_file.root.meta_data[-1]["timestamp_stop"] - in_file.root.meta_data[0]["timestamp_start"])
+#         
+#     raise
     rep = Replay()
-    #anlysis_utils.get_rate_normalization("/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5",'event',plot=True)
-    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5", real_time=False))):       
+#     interpreter = PyDataInterpreter()
+#     interpreter.debug_events(1000, 1011)
+#     interpreter.set_FEI4B(False)
+#     interpreter.set_trig_count(0)
+#     
+#     hits_per_event_hist = np.zeros(100)
+#     hits_per_event = np.zeros(0)
+#     
+    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/110_mimosa_telescope_testbeam_14122016_fei4_self_trigger_scan.h5", real_time=False))):       
         raw_data = ro[0]
-        sel = is_data_record(raw_data)
-        trig = is_data_header(raw_data)
+        if timestamp == None:
+            timestamp_start= ro[1]
+        dr = is_data_record(raw_data)
+        timestamp = ro[1]
+#         interpreter.interpret_raw_data(raw_data)    # interpret the raw data
+#         hits = interpreter.get_hits()
+#         if hits.shape[0] != 0:
+#             event_numbers = hits[:]["event_number"].copy()
+#             event_numbers -= hits[0]["event_number"]            
+#             hist = np.bincount(event_numbers)
+#             hits_per_event = np.append(hits_per_event, hist)
+#             hits_per_event_hist += np.bincount(hist, minlength=100)
+#     plt.bar(range(100), hits_per_event_hist[:100])
+#     plt.yscale("log")
+#     plt.show()
 
-#         record_rawdata = int(raw_data[0])
-#         record_word = BitLogic.from_value(value=record_rawdata, size=32)
-        #print ('lvl1id', record_word[14:10].tovalue()), ('bcid', record_word[9:0].tovalue())
-        
-        events = build_events_from_raw_data(raw_data)
-        #print raw_events
-        print get_hits_in_events(raw_data,events)
-        
-        
 
-        print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])        
-        #print is_trigger_word(raw_data[sel])
-        
-        #print len(raw_data[sel])
-        
-        # print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])
+#          print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])
+#  
+        rHit.append(len(raw_data[dr]))
 
-        hits.append(len(raw_data[sel]))
-        if np.any(sel):
+        
+        if np.any(dr):
+# #             
+            col, row = get_col_row_array_from_data_record_array(raw_data[dr])
+# 
+#        
+             
+            if len(rHit)>500:
+                x=np.mean(rHit)
+                rms = np.sqrt(np.mean([x**2,len(raw_data[dr])**2]))                             
+                if len(raw_data[dr])>x*0.75:                                #Hitrate Baseline 
+                    base.append(len(raw_data[dr]))
+                    b=np.mean(base)
+                    print "+"
+                    if len(raw_data[dr])>2*b:                               #Hitrate Peak
+                        print "\n",len(raw_data[dr])/b
+                        print len(rHit),"\n"       
+                if  len(raw_data[dr])<np.mean(rHit)*0.25:
+                        print "-"
+#                         print len(rHit)/17.4833                           #17.4833 readouts per second calculated from data
+                if rms>20000:
+                    print rms
+                    print len(rHit),"\n"
             
-            col, row = get_col_row_array_from_data_record_array(raw_data[sel])
-
-            #Nach Grubbs Ausreisserprinzip 
-#             if len(raw_data[sel])>50000:
-#                 base.append(len(raw_data[sel]))
-#                 #base=grubbs.test(base, alpha=0.3)
-#                 w = grubbs.max_test_indices(base, alpha=0.0000000001)
-#                 v = grubbs.max_test_outliers(base, alpha=0.0000000001)
-
-            #Baseline bestimmung mit mittelwert
-            if len(raw_data[sel])>50000:                      #Hitrate Baseline 
-                base.append(len(raw_data[sel]))
-                b=np.mean(base)
-                if len(raw_data[sel])>1.1*b:                  #Hitrate Peak
-                    print "\n",len(raw_data[sel])/b       
-                    print len(hits)
-            
-            
-            
-                                      
+            c.append(np.mean(col))
+            r.append(np.mean(row)) 
+                               
             if not np.any(hist_occ):
                 hist_occ = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
-
+ 
             else:
                 hist_occ += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
+             
             
-        
-#         if i > 100000:
-#             break
+# #         if i > 100000:
+# #             break
+#     
+# 
+#     else:
+#         interpreter.store_event()
+
+        if timestamp-timestamp_start>120:           #integration time should be variable
+            print timestamp-timestamp_start
+            
+            return rHit
+
+def handle_data(data):
     
-#     print w
-#     print v
+#     with AnalyzeRawData(create_pdf=False) as analyze_raw_data:
+#         analyze_raw_data.create_source_scan_hist = True
+#         analyze_raw_data.plot_histograms()
+
+    #data in needed format (glib)
     
-      
-    return hist_occ, hits
+    #send data
+    #socket.send(data)
+    
+    print data
+
+    
+def start():
+    analysis=True
+    while analysis==True:
+        data=analyze()
+        handle_data(data)
+        msg = socket.recv(flags=zmq.NOBLOCK)
+        if msg == "stop":
+            analysis=False
+            break
+    
     
 if __name__ == "__main__":
+
+    #r,c,hist_occ,rHit = analyze()
+    start()
     
-    hist_occ, hits = analyze()
-    
-    
-    #Plot Data
+    # Plot Data
 #     plt.imshow(hist_occ, vmax=100)
-#     #print type(hist_occ)
-#     
+
+
 #     #Plot Contour Plot of Data
 #     fig, ax = plt.subplots()
 #     CS = ax.contour(hist_occ)
 #     ax.grid(linewidth=0.5)
-    
-#     max=np.argwhere(hist_occ == hist_occ.max())
-#     print max
-    
-#     flat=hist_occ.flatten()
-#     peaks, _ = find_peaks(flat, 300 )
-#     peaks2, _ = find_peaks(flat[peaks])
-    
-#     plt.plot(flat[peaks])
-#     plt.plot(peaks,flat[peaks],"x")
-    
-    #Plot Hitrate of Data
-    plt.plot(hits)
-    plt.axis([-80, 800,np.min(0), np.max(60000)])
-    
-    #[mean(row), mean(col), sqrt(var(row)), sqrt(var(col))]
-    #[16.84588441330998, 198.79159369527144, 10.51230934121584, 32.733338555313495]
-    #[29.822861430715356, 292.3768134067034, 13.348675259436764, 24.562049075313105]
-    
-    plt.show()
-                 
 
-#     with tb.open_file(r"/home/rasmus/git/pyBAR/pybar/data2/module_0/7_module_0_fei4_self_trigger_scan.h5") as in_file:
-#         for word in in_file.root.raw_data:
-#             print word
-#             print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
+
+    # Plot Hitrate of Data
+
+
+
+    #plt.plot(hits_per_event)
+    #plt.plot(hist_hit)
+#     plt.plot(rHit)
+#     plt.xlabel("index")
+#     plt.ylabel("mean hits per event")
+#     plt.text(1500, 30000, "marks 140-230")
+#     plt.axvline(140,linewidth=1, color='r')
+#     plt.axvline(230,linewidth=1, color='r')
+    #plt.axhline(y,linewidth=1, color='r')
+#     plt.axis([-80, 2200,np.min(0), np.max(1000)])
+    plt.show()
+              
