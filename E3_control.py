@@ -12,6 +12,7 @@ from pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
 from pybar.scans.tune_stuck_pixel import StuckPixelTuning
 from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
 import time
+from pybar.fei4_run_base import Fei4RunBase
 from pybar.analysis.analyze_raw_data import AnalyzeRawData
 from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array, build_events_from_raw_data, is_data_header, is_trigger_word, \
     get_trigger_data
@@ -28,9 +29,7 @@ from pybar_fei4_interpreter.data_histograming import PyDataHistograming
 from matplotlib.pyplot import axis
 from pybar.utils.utils import argmax
 from numpy import mean
-from zmq.backend.cython.constants import NOBLOCK
-
-
+from pybar import fei4_run_base
 
 
 conf = {
@@ -41,8 +40,10 @@ context = zmq.Context()
 socket = context.socket(zmq.PAIR)
 socket.connect("tcp://127.0.0.1:%s" % conf["Port"])
 
-poller = zmq.Poller()
-poller.register(socket, zmq.POLLIN)
+
+
+# poller = zmq.Poller()
+# poller.register(socket, zmq.POLLIN)
 
 try:
     from power_supply import power_off, power_on, voltage_channel1, voltage_channel2
@@ -57,9 +58,14 @@ runmngr = RunManager("/home/rasmus/git/pyBAR/pybar/configuration.yaml")
 run_conf = {"scan_timeout": None,
           "reset_rx_on_error": False}
 
+timestamp_start=0
+rHit = []
+base = []
+c=[]
+r=[]
+hist_occ=None
+readout_index=[]
 
-
-    
 # def daq(word):
 #         record_rawdata = int(word)
 #         record_word = BitLogic.from_value(value=record_rawdata, size=32)
@@ -94,6 +100,7 @@ def add_done_message():
 
         
 def main():
+    global hist_occ
     while True:  # should alwayz run no blocking
         # poller.poll(100)  # wait up to 100 ms
         msg = socket.recv()
@@ -116,7 +123,7 @@ def main():
         if get_status() != "RUNNING" and msg == "START":
             
             # Set own data handle
-            # fei4_selftrigger_scan = Fei4SelfTriggerScan()
+            #fei4_selftrigger_scan = Fei4SelfTriggerScan()
             Fei4SelfTriggerScan.run_conf = run_conf
             Fei4SelfTriggerScan.handle_data = handle_data
             runmngr.run_run(run=Fei4SelfTriggerScan, run_conf=run_conf, use_thread=True)
@@ -126,16 +133,19 @@ def main():
             socket.send(status)
             
         if get_status() == "RUNNING" and msg == "STOP":
+            
             runmngr.cancel_current_run(msg)
             socket.send("%s Run Stopped" % runmngr.current_run.run_id)
     
         if msg == "exit":
-            if runmngr:
-                runmngr.close()
-                break
+            if get_status() == "RUNNING":
+                runmngr.cancel_current_run(msg)
+                socket.send("%s Run Stopped" % runmngr.current_run.run_id)
+            
             logging.info("Program terminates")
             socket.send("Program terminates")
-         
+            break
+            
         if get_status() != "RUNNING" and msg == "TUNE":
             socket.send("Start GdacTuning")
             runmngr.run_run(GdacTuning,)
@@ -165,8 +175,8 @@ def main():
             socket.send_string("voltage channel 2 = %s " % voltage_channel2()) 
     
         if msg == "status":
-            # socket.send_string("voltage channel 1 = %s" %voltage_channel1())
-            # socket.send_string("voltage channel 2 = %s" %voltage_channel2())   
+            socket.send_string("voltage channel 1 = %s" %voltage_channel1())
+            socket.send_string("voltage channel 2 = %s" %voltage_channel2())   
             status = get_status()
             if status == None:
                 socket.send("Status=None")
@@ -180,29 +190,47 @@ def main():
             socket.send("starting Stuck Pixel Tuning")
             runmngr.run_run(StuckPixelTuning)
             add_done_message()
-
+            
+        if get_status() == "RUNNING" and msg == "daq":
+            readout_index=[]
+        
+        if msg == "peek":
+            start = time.time()
+            while True:
+                if np.any(hist_occ) != None: 
+                    plt.imshow(hist_occ, aspect="auto")
+                    plt.show()
+                    break
+                if time.time()-start>5:
+                    print "Error"
+                    break 
+                else:
+                    time.sleep(0.1)
     #    else:
     #        socket.send("invalid input")
 
+def baseline(rHit):
+
+    readout_index.append(0)
+    mean=np.mean(rHit)
+    return len(readout_index),mean
 
 #@profile
-def analyze():
-    import tables as tb
+def analyze(data_array):
     from pybar.daq.fei4_record import FEI4Record
     
-    from Replay import Replay    
-    hist_occ = None
-    rHit = []           #make rHit global varable?
-    base = []
-    c=[]
-    r=[]
-    timestamp = None
+    #from Replay import Replay    
+    global rHit         #make rHit global varable?
+    global base 
+    global c
+    global r
+    global hist_occ
     
 #     with tb.open_file(r"/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5") as in_file:
 #         print (in_file.root.meta_data[-1]["timestamp_stop"] - in_file.root.meta_data[0]["timestamp_start"])
 #         
 #     raise
-    rep = Replay()
+    
 #     interpreter = PyDataInterpreter()
 #     interpreter.debug_events(1000, 1011)
 #     interpreter.set_FEI4B(False)
@@ -211,12 +239,14 @@ def analyze():
 #     hits_per_event_hist = np.zeros(100)
 #     hits_per_event = np.zeros(0)
 #     
-    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/110_mimosa_telescope_testbeam_14122016_fei4_self_trigger_scan.h5", real_time=False))):       
+
+    
+    #rep = Replay()
+    #for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/110_mimosa_telescope_testbeam_14122016_fei4_self_trigger_scan.h5", real_time=False))):  
+    for ro in tqdm(data_array[0]):
         raw_data = ro[0]
-        if timestamp == None:
-            timestamp_start= ro[1]
         dr = is_data_record(raw_data)
-        timestamp = ro[1]
+        timestamp=ro[1]
 #         interpreter.interpret_raw_data(raw_data)    # interpret the raw data
 #         hits = interpreter.get_hits()
 #         if hits.shape[0] != 0:
@@ -228,21 +258,19 @@ def analyze():
 #     plt.bar(range(100), hits_per_event_hist[:100])
 #     plt.yscale("log")
 #     plt.show()
-
-
-#          print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])
+ 
+#         print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])
 #  
+         
+        index,x=baseline(rHit)
+         
         rHit.append(len(raw_data[dr]))
-
-        
+     
         if np.any(dr):
 # #             
             col, row = get_col_row_array_from_data_record_array(raw_data[dr])
-# 
 #        
-             
-            if len(rHit)>500:
-                x=np.mean(rHit)
+            if index>500:
                 rms = np.sqrt(np.mean([x**2,len(raw_data[dr])**2]))                             
                 if len(raw_data[dr])>x*0.75:                                #Hitrate Baseline 
                     base.append(len(raw_data[dr]))
@@ -250,68 +278,68 @@ def analyze():
                     print "+"
                     if len(raw_data[dr])>2*b:                               #Hitrate Peak
                         print "\n",len(raw_data[dr])/b
-                        print len(rHit),"\n"       
-                if  len(raw_data[dr])<np.mean(rHit)*0.25:
-                        print "-"
-#                         print len(rHit)/17.4833                           #17.4833 readouts per second calculated from data
-                if rms>20000:
-                    print rms
-                    print len(rHit),"\n"
-            
-            c.append(np.mean(col))
-            r.append(np.mean(row)) 
-                               
+                        print timestamp,"\n"       
+                        if  len(raw_data[dr])<np.mean(rHit)*0.25:
+                            print "-"
+                            if rms>20000:
+                                print rms
+                                print timestamp,"\n"
+             
+                            c.append(np.mean(col))
+                            r.append(np.mean(row)) 
+                                
             if not np.any(hist_occ):
                 hist_occ = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
- 
+  
             else:
                 hist_occ += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
+              
              
-            
 # #         if i > 100000:
 # #             break
 #     
 # 
 #     else:
 #         interpreter.store_event()
+             
+    return hist_occ,timestamp
 
-        if timestamp-timestamp_start>120:           #integration time should be variable
-            print timestamp-timestamp_start
-            
-            return rHit
-
-def handle_data(data):
+def handle_data(self, data):
     
-#     with AnalyzeRawData(create_pdf=False) as analyze_raw_data:
-#         analyze_raw_data.create_source_scan_hist = True
-#         analyze_raw_data.plot_histograms()
-
-    #data in needed format (glib)
+    global timestamp_start
+    global hist_occ
     
-    #send data
+    if timestamp_start == 0:
+        timestamp_start=data[0][0][1]
+      
+        
+    hist,timestamp=analyze(data)
+    
+    if timestamp-timestamp_start>1:
+        timestamp_start=0
+
+        del c[:]
+        del r[:]
+        hist_occ=None
+
+        
+    #send data    
     #socket.send(data)
-    
-    print data
+                                                    #integration time should be variable
+      
 
-    
-def start():
-    analysis=True
-    while analysis==True:
-        data=analyze()
-        handle_data(data)
-        msg = socket.recv(flags=zmq.NOBLOCK)
-        if msg == "stop":
-            analysis=False
-            break
-    
+#     
     
 if __name__ == "__main__":
-
-    #r,c,hist_occ,rHit = analyze()
-    start()
     
+    
+    #r,c,hist_occ,rHit = analyze()
+    main()
+    
+#     plt.imshow(hist_occ, aspect="auto")
+#     plt.show()
+#     
     # Plot Data
-#     plt.imshow(hist_occ, vmax=100)
 
 
 #     #Plot Contour Plot of Data
@@ -334,5 +362,4 @@ if __name__ == "__main__":
 #     plt.axvline(230,linewidth=1, color='r')
     #plt.axhline(y,linewidth=1, color='r')
 #     plt.axis([-80, 2200,np.min(0), np.max(1000)])
-    plt.show()
               
