@@ -22,21 +22,36 @@ from pybar_fei4_interpreter import analysis_utils as fast_analysis_utils
 from tqdm import tqdm
 from pybar_fei4_interpreter.data_interpreter import PyDataInterpreter
 from pybar_fei4_interpreter.data_histograming import PyDataHistograming
-
-
+import zlib
+import cPickle as pickle
 
 conf = {
-    "Port":5000,
+    "port_slow_controll":5000,
+    "port_hit_map":5002,
     }
+
+#global variables
+global_vars = {
+    "hit_rate":[],
+    "baseline":[],
+    "coloumn":[],
+    "row":[],
+    "hist_occ": None,
+    "timestamp":[],
+    "readout_index":[],
+    "integration_time": 1,
+    "start_time":time.time() 
+    } 
+
+
 
 context = zmq.Context()
 socket = context.socket(zmq.PAIR)
-socket.connect("tcp://127.0.0.1:%s" % conf["Port"])
+socket.connect("tcp://127.0.0.1:%s" % conf["port_slow_controll"])
 
-
-
-# poller = zmq.Poller()
-# poller.register(socket, zmq.POLLIN)
+context2 = zmq.Context()
+socket2 = context2.socket(zmq.PUB)
+socket2.bind("tcp://127.0.0.1:%s" % conf["port_hit_map"])
 
 #get notified if TTi are not working
 try:
@@ -52,40 +67,6 @@ runmngr = RunManager("/home/rasmus/git/pyBAR/pybar/configuration.yaml")
 run_conf = {"scan_timeout": None,
           "reset_rx_on_error": False}
 
-
-#global variables
-rHit = []
-base = []
-c=[]
-r=[]
-hist_occ=None
-timestamp=None
-readout_index=[]
-integration_time = 1
-
-# def daq(word):
-#         record_rawdata = int(word)
-#         record_word = BitLogic.from_value(value=record_rawdata, size=32)
-#         tot2 = record_word[3:0].tovalue()  # find TOT2
-#         tot1 = record_word[7:4].tovalue()  # find TOT1
-#         if tot1 < 14:
-#             row = record_word[16:8].tovalue()
-#             coloumn = record_word[23:17].tovalue()
-#             x.append(row)
-#             y.append(coloumn)
-#         if tot2 < 14:
-#             row = record_word[16:8].tovalue() + 1
-#             coloumn = record_word[23:17].tovalue()
-#             x.append(row)
-#             y.append(coloumn)
-#         else:
-#             return 0  
-    # print "{0:b}".format(word), FEI4Record(word, chip_flavor="fei4b"), is_data_record(word)
-                
-#     plt.hist2d(x,y)
-#     plt.show()
-
-
 def get_status():
     if runmngr.current_run:
         return runmngr.current_run.get_run_status()
@@ -97,10 +78,7 @@ def add_done_message():
 
         
 def main():
-    global hist_occ
     while True:  # should alwayz run no blocking
-        # poller.poll(100)  # wait up to 100 ms
-
         msg = socket.recv()
         
         if get_status() != "RUNNING" and msg == "init":
@@ -155,7 +133,17 @@ def main():
                 if msg == "STOP":
                     runmngr.cancel_current_run(msg)
                     socket.send("%s Run Stopped" % runmngr.current_run.run_id)
-                    break  
+                    break
+                if msg == "status":
+                    socket.send_string("voltage channel 1 = %s" %voltage_channel1())
+                    socket.send_string("voltage channel 2 = %s" %voltage_channel2())   
+                    status = get_status()
+                    socket.send(runmngr.current_run.run_id)
+                    msg=None
+                    if status == None:
+                        socket.send("Status=None")
+                    else:
+                        socket.send(status) 
                 if get_status() == "FINISHED" and runmngr.current_run.run_id == "tdac_tuning":
                     add_done_message()
                     break
@@ -205,6 +193,16 @@ def main():
                     runmngr.cancel_current_run(msg)
                     socket.send("%s Run Stopped" % runmngr.current_run.run_id)
                     break
+                if msg == "status":
+                    socket.send_string("voltage channel 1 = %s" %voltage_channel1())
+                    socket.send_string("voltage channel 2 = %s" %voltage_channel2())   
+                    status = get_status()
+                    socket.send(runmngr.current_run.run_id)
+                    msg=None
+                    if status == None:
+                        socket.send("Status=None")
+                    else:
+                        socket.send(status) 
                 if get_status() == "FINISHED" and runmngr.current_run.run_id == "stuck_pixel_tuning":
                     add_done_message()
                     break
@@ -212,8 +210,8 @@ def main():
         if msg == "peek":
             start = time.time()
             while True:
-                if np.any(hist_occ) != None: 
-                    plt.imshow(hist_occ, aspect="auto")
+                if np.any(global_vars["hist_occ"]) != None: 
+                    plt.imshow(global_vars["hist_occ"], aspect="auto")
                     plt.ylabel("Row")
                     plt.xlabel("Coloumn")
                     plt.show()
@@ -224,41 +222,26 @@ def main():
                 else:
                     time.sleep(0.05)
                     
-                    
-        
-    #    else:
-    #        socket.send("invalid input")
+        if msg == "framerate":
+            socket.send("input new integration time:")
+            msg=socket.recv()
+            global_vars["integration_time"]=float(msg)
+            socket.send("new integration time:%s" % float(msg))
+
+            
 
 def baseline(rHit):
-    readout_index.append(0)
+    global_vars["readout_index"].append(0)
     mean=np.mean(rHit)
-    return len(readout_index),mean
+    return len(global_vars["readout_index"]),mean
 
 #@profile
 def analyze(data_array):
     from pybar.daq.fei4_record import FEI4Record
- 
+
     
-    global rHit         #make rHit global varable?
-    global base 
-    global c
-    global r
-    global hist_occ
-    global timestamp
-    timestamp=[]
-#     with tb.open_file(r"/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5") as in_file:
-#         print (in_file.root.meta_data[-1]["timestamp_stop"] - in_file.root.meta_data[0]["timestamp_start"])
-#         
-#     raise
-    
-#     interpreter = PyDataInterpreter()
-#     interpreter.debug_events(1000, 1011)
-#     interpreter.set_FEI4B(False)
-#     interpreter.set_trig_count(0)
-#     
-#     hits_per_event_hist = np.zeros(100)
-#     hits_per_event = np.zeros(0)
-#     
+    if global_vars["integration_time"]<0.05:
+        global_vars["integration_time"]=0.05
 
     #from Replay import Replay   
     #rep = Replay()
@@ -266,95 +249,72 @@ def analyze(data_array):
     for ro in tqdm(data_array[0]):
         raw_data = ro[0]
         dr = is_data_record(raw_data)
-        timestamp.append(ro[1])
-#         interpreter.interpret_raw_data(raw_data)    # interpret the raw data
-#         hits = interpreter.get_hits()
-#         if hits.shape[0] != 0:
-#             event_numbers = hits[:]["event_number"].copy()
-#             event_numbers -= hits[0]["event_number"]            
-#             hist = np.bincount(event_numbers)
-#             hits_per_event = np.append(hits_per_event, hist)
-#             hits_per_event_hist += np.bincount(hist, minlength=100)
-#     plt.bar(range(100), hits_per_event_hist[:100])
-#     plt.yscale("log")
-#     plt.show()
- 
-#         print "{0:b}".format(ro[0][0]), FEI4Record(ro[0][0], chip_flavor="fei4b"), is_data_record(ro[0][0])
-#  
-         
-        index,x=baseline(rHit)                                     #x: hitrate, index: Number of Readouts 
-        rHit.append(len(raw_data[dr]))
+        global_vars["timestamp"].append(ro[1])
+
+        index,x=baseline(global_vars["hit_rate"])                                     #x: hitrate, index: Number of Readouts 
+        global_vars["hit_rate"].append(len(raw_data[dr]))
      
         if np.any(dr):
 # #             
             col, row = get_col_row_array_from_data_record_array(raw_data[dr])
 #        
             if index>500:
-                rms = np.sqrt(np.mean([x**2,rHit[-1]**2]))                             
-                if rHit[-1]>x*0.75:                                #Hitrate Baseline 
-                    base.append(rHit[-1])
-                    b=np.mean(base)
-                    if rHit[-1]>2.5*b:                               #Hitrate Peak
+                rms = np.sqrt(np.mean([x**2,global_vars["hit_rate"][-1]**2]))                             
+                if global_vars["hit_rate"][-1]>x*0.75:                                #Hitrate Baseline 
+                    global_vars["baseline"].append(global_vars["hit_rate"][-1])
+                    b=np.mean(global_vars["baseline"])
+                    if global_vars["hit_rate"][-1]>2.5*b:                               #Hitrate Peak
                         print "\n",len(raw_data[dr])/b
-                        print time.time(),"\n"       
-                        if  rHit[-1]<np.mean(rHit)*0.25:
-                            if rms>20000:
-                                print rms
-                                print time.time(),"\n"
+                        print time.time(),"\n" 
+                        socket.send("hitrate surpassed 250%")      
+                    if  global_vars["hit_rate"][-1]<np.mean(global_vars["hit_rate"])*0.25:
+                        pass
+                    if rms>20000:
+                        print rms
+                        print time.time(),"\n"
              
-            c.append(np.mean(col))
-            r.append(np.mean(row)) 
+            global_vars["coloumn"].append(np.mean(col))
+            global_vars["row"].append(np.mean(row)) 
                                 
-            if not np.any(hist_occ):
-                hist_occ = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
+            if not np.any(global_vars["hist_occ"]):
+                global_vars["hist_occ"] = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
   
             else:
-                hist_occ += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
-              
-             
-# #         if i > 100000:
-# #             break
-#     
-# 
-#     else:
-#         interpreter.store_event()     
-    return hist_occ,timestamp
+                global_vars["hist_occ"] += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
+        
+
+        
+        if global_vars["timestamp"][-1]-global_vars["timestamp"][0]>global_vars["integration_time"]:
+            hitrate=np.sum(global_vars["hit_rate"])/global_vars["integration_time"]                        
+                                                                  
+            print ("\nHitrate: %s Hz" % hitrate)           
+            #socket.send("Hitrate: %s Hz" % hitrate)
+         
+            print "variance coloum: %s" % np.var(global_vars["coloumn"])
+            print "variance row:    %s" % np.var(global_vars["row"])
+            print global_vars["timestamp"][-1]-global_vars["timestamp"][0]
+            global_vars["start_time"]=time.time()
+         
+            p_hist = pickle.dumps(global_vars["hist_occ"], -1)
+            zlib_hist = zlib.compress(p_hist)
+            
+#             compressed_array = io.BytesIO()    # np.savez_compressed() requires a file-like object to write to
+#             np.savez_compressed(compressed_array, global_vars["hist_occ"])
+                   
+            socket2.send(zlib_hist)
+            
+            #free memory of global variables
+            del global_vars["hit_rate"][:]
+            del global_vars["coloumn"][:]
+            del global_vars["row"][:]
+            del global_vars["timestamp"][:]
+            global_vars["hist_occ"]=None
+
+    return 0
 
 def handle_data(self, data):
-    import tables as tb
-    global timestamp
-    global hist_occ
-    global rHit
-    global integration_time
-    
-#     if timestamp_start == 0:
-#         timestamp_start=data[0][0][1]
-      
-        
-    hist,timestamp=analyze(data)
-    
-    if timestamp[-1]-timestamp[0]>integration_time: 
-        hitrate=np.sum(rHit)/integration_time                        #integration time should be variable
-                                                                 
-        print ("\nHitrate: %s Hz" % hitrate)           #needs to be fixed from integration time
-        socket.send("Hitrate: %s Hz" % hitrate)
-        
-        print "variance coloum: %s" % np.var(c)
-        print "variance row:    %s" % np.var(r)
-                
-        del rHit[:]
-        del c[:]
-        del r[:]
-        hist_occ=None
-        timestamp=None
-        
-    #send data    
-    #socket.send(data)
-                                                    
-      
+    analyze(data)
 
-#     
-    
 if __name__ == "__main__":
     
     
@@ -387,4 +347,3 @@ if __name__ == "__main__":
 #     plt.axvline(230,linewidth=1, color='r')
     #plt.axhline(y,linewidth=1, color='r')
 #     plt.axis([-80, 2200,np.min(0), np.max(1000)])
-              
