@@ -32,18 +32,20 @@ conf = {
 
 #global variables
 global_vars = {
-    "hit_rate":[],
+    "hits":[],
     "baseline":[],
     "coloumn":[],
     "row":[],
     "hist_occ": None,
-    "timestamp":[],
-    "readout_index":[],
-    "integration_time": 1,
-    "start_time":time.time() 
+    "timestamp_start":[],
+    "timestam_stop":[],
+    "integration_time": 0.05,
+    "hitrate":[],
+    "beam":False 
     } 
 
-
+run_conf = {"scan_timeout": None,
+          "reset_rx_on_error": False}
 
 context = zmq.Context()
 socket = context.socket(zmq.PAIR)
@@ -64,8 +66,7 @@ except Exception:
    
 runmngr = RunManager("/home/rasmus/git/pyBAR/pybar/configuration.yaml")
 
-run_conf = {"scan_timeout": None,
-          "reset_rx_on_error": False}
+
 
 def get_status():
     if runmngr.current_run:
@@ -96,7 +97,7 @@ def main():
             add_done_message()
                 
         if get_status() != "RUNNING" and msg == "START":
-            # Set own data handle
+            #Set own data handle
             #fei4_selftrigger_scan = Fei4SelfTriggerScan()
             Fei4SelfTriggerScan.run_conf = run_conf
             Fei4SelfTriggerScan.handle_data = handle_data
@@ -223,55 +224,47 @@ def main():
                     time.sleep(0.05)
                     
         if msg == "framerate":
-            socket.send("input new integration time:")
+            socket.send("input new framerate:")
             msg=socket.recv()
-            global_vars["integration_time"]=float(msg)
-            socket.send("new integration time:%s" % float(msg))
+            global_vars["integration_time"]=1/float(msg)
+            socket.send("new framerate:%s" % float(msg))
 
-            
-
-def baseline(rHit):
-    global_vars["readout_index"].append(0)
-    mean=np.mean(rHit)
-    return len(global_vars["readout_index"]),mean
+def analyze_beam_hitrate(beam):
+    if len(global_vars["hitrate"])>10:                     
+        if global_vars["hitrate"][-1]>np.mean(global_vars["hitrate"])*0.5:
+            global_vars["baseline"].append(global_vars["hitrate"][-1])
+            b=np.mean(global_vars["baseline"])
+            if beam==True:
+                beam=False
+                socket.send("beam on")
+            if global_vars["hitrate"][-1]>2.5*b:                               #Hitrate Peak
+                print global_vars["hitrate"][-1]
+                socket.send("hitrate surpassed 250%")      
+        if  global_vars["hitrate"][-1]<np.mean(global_vars["hitrate"])*0.25:
+            if beam==False:
+                beam=True
+                socket.send("beam off")
+    return beam
 
 #@profile
 def analyze(data_array):
     from pybar.daq.fei4_record import FEI4Record
-
     
     if global_vars["integration_time"]<0.05:
         global_vars["integration_time"]=0.05
 
     #from Replay import Replay   
     #rep = Replay()
-    #for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/110_mimosa_telescope_testbeam_14122016_fei4_self_trigger_scan.h5", real_time=False))):  
+    #for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/120_scc_167_ext_trigger_scan.h5", real_time=True))):  
     for ro in tqdm(data_array[0]):
         raw_data = ro[0]
         dr = is_data_record(raw_data)
-        global_vars["timestamp"].append(ro[1])
-
-        index,x=baseline(global_vars["hit_rate"])                                     #x: hitrate, index: Number of Readouts 
-        global_vars["hit_rate"].append(len(raw_data[dr]))
-     
+        global_vars["timestamp_start"].append(ro[1])
+        timestamp_stop=ro[2]                            
+        global_vars["hits"].append(len(raw_data[dr]))                                              
         if np.any(dr):
 # #             
             col, row = get_col_row_array_from_data_record_array(raw_data[dr])
-#        
-            if index>500:
-                rms = np.sqrt(np.mean([x**2,global_vars["hit_rate"][-1]**2]))                             
-                if global_vars["hit_rate"][-1]>x*0.75:                                #Hitrate Baseline 
-                    global_vars["baseline"].append(global_vars["hit_rate"][-1])
-                    b=np.mean(global_vars["baseline"])
-                    if global_vars["hit_rate"][-1]>2.5*b:                               #Hitrate Peak
-                        print "\n",len(raw_data[dr])/b
-                        print time.time(),"\n" 
-                        socket.send("hitrate surpassed 250%")      
-                    if  global_vars["hit_rate"][-1]<np.mean(global_vars["hit_rate"])*0.25:
-                        pass
-                    if rms>20000:
-                        print rms
-                        print time.time(),"\n"
              
             global_vars["coloumn"].append(np.mean(col))
             global_vars["row"].append(np.mean(row)) 
@@ -284,16 +277,20 @@ def analyze(data_array):
         
 
         
-        if global_vars["timestamp"][-1]-global_vars["timestamp"][0]>global_vars["integration_time"]:
-            hitrate=np.sum(global_vars["hit_rate"])/global_vars["integration_time"]                        
-                                                                  
-            print ("\nHitrate: %s Hz" % hitrate)           
+        if timestamp_stop-global_vars["timestamp_start"][0]>global_vars["integration_time"]:
+            global_vars["hitrate"].append(np.sum(global_vars["hits"])/(timestamp_stop-global_vars["timestamp_start"][0]))
+            
+            global_vars["beam"]=analyze_beam_hitrate(global_vars["beam"])
+
+            time.sleep(global_vars["integration_time"])                                                    
+            print ("\nHitrate: %.0f Hz" % global_vars["hitrate"][-1])           
             #socket.send("Hitrate: %s Hz" % hitrate)
          
             print "variance coloum: %s" % np.var(global_vars["coloumn"])
             print "variance row:    %s" % np.var(global_vars["row"])
-            print global_vars["timestamp"][-1]-global_vars["timestamp"][0]
-            global_vars["start_time"]=time.time()
+            print "integration time [s]:",timestamp_stop-global_vars["timestamp_start"][0]
+#             print time.time()-global_vars["start_time"]
+#             global_vars["start_time"]=time.time()
          
             p_hist = pickle.dumps(global_vars["hist_occ"], -1)
             zlib_hist = zlib.compress(p_hist)
@@ -304,10 +301,10 @@ def analyze(data_array):
             socket2.send(zlib_hist)
             
             #free memory of global variables
-            del global_vars["hit_rate"][:]
+            del global_vars["hits"][:]
             del global_vars["coloumn"][:]
             del global_vars["row"][:]
-            del global_vars["timestamp"][:]
+            del global_vars["timestamp_start"][:]
             global_vars["hist_occ"]=None
 
     return 0
@@ -317,10 +314,9 @@ def handle_data(self, data):
 
 if __name__ == "__main__":
     
-    
     #r,c,hist_occ,rHit = analyze()
     main()
-    
+    #analyze(1)
 #     plt.imshow(hist_occ, aspect="auto")
 #     plt.show()
 #     
