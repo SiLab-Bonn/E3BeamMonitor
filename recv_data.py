@@ -11,8 +11,6 @@ from pyqtgraph.Qt import QtCore, QtGui
 from pyqtgraph.dockarea import DockArea, Dock
 import pyqtgraph.ptime as ptime
 
-from pybar_fei4_interpreter.data_interpreter import PyDataInterpreter
-from pybar_fei4_interpreter.data_histograming import PyDataHistograming
 import zlib
 import cPickle as pickle
 
@@ -124,6 +122,7 @@ class OnlineMonitorApplication(QtGui.QMainWindow):
         occupancy_graphics.show()
         view = occupancy_graphics.addViewBox()
         self.occupancy_img = pg.ImageItem(border='w')
+        
         view.addItem(self.occupancy_img)
         view.setRange(QtCore.QRectF(0, 0, 80, 336))
         dock_occcupancy.addWidget(occupancy_graphics)
