@@ -13,10 +13,8 @@ from pybar.scans.tune_stuck_pixel import StuckPixelTuning
 from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
 import time
 from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array
-from matplotlib import pyplot as plt
 import numpy as np
 from pybar_fei4_interpreter import analysis_utils as fast_analysis_utils
-from tqdm import tqdm
 import zlib
 import cPickle as pickle
 
@@ -35,8 +33,7 @@ global_vars = {
     "timestamp_start":[],
     "integration_time": .1,
     "hitrate":[],
-    "beam":False,
-    "time":[] 
+    "beam":False
     }
 
 from pybar.daq import fifo_readout
@@ -45,8 +42,10 @@ from pybar.daq import fifo_readout
 run_conf = {"scan_timeout": None,
             "no_data_timeout": None,
             "reset_rx_on_error": False,
-            "target_threshold": 54,
             }
+
+tuning_conf = {"target_threshold": 54}
+
 
 context = zmq.Context()
 socket = context.socket(zmq.PAIR)
@@ -67,6 +66,8 @@ except Exception:
    
 runmngr = RunManager("/home/rasmus/git/pyBAR/pybar/configuration.yaml")
 
+def skip(raw_data):
+    pass
 
 def get_status():
     if runmngr.current_run:
@@ -88,6 +89,8 @@ def main():
                 power_on()
                 socket.send_string("voltage channel 1 = %s " % voltage_channel1())
                 socket.send_string("voltage channel 2 = %s " % voltage_channel2())
+                DigitalScan.analyze=skip
+                DigitalScan.handle_data = handle_data
                 runmngr.run_run(run=DigitalScan,)
             except (SystemExit,):
                 raise
@@ -102,8 +105,9 @@ def main():
             Fei4SelfTriggerScan.handle_data = handle_data
             runmngr.run_run(run=Fei4SelfTriggerScan, run_conf=run_conf, use_thread=True)
             time.sleep(1)
-            status = get_status()
-            socket.send(status)
+            #status = get_status()
+            socket.send("%s" % runmngr.current_run.run_id)
+            socket.send(get_status())
             
         if get_status() == "RUNNING" and msg == "STOP":
             fifo_readout.WRITE_INTERVAL = 1
@@ -121,7 +125,8 @@ def main():
         if get_status() != "RUNNING" and msg == "TUNE":
 
             socket.send("Start GdacTuning")
-            runmngr.run_run(GdacTuning,run_conf=run_conf, use_thread=True)
+            GdacTuning.handle_data = handle_data
+            runmngr.run_run(GdacTuning,run_conf=tuning_conf, use_thread=True)
             while True:
                 time.sleep(1)
                 try:
@@ -131,7 +136,8 @@ def main():
                 if get_status() == "FINISHED" and runmngr.current_run.run_id != "tdac_tuning":
                     add_done_message()
                     socket.send("Start TdacTuning")
-                    runmngr.run_run(TdacTuning,run_conf=run_conf, use_thread=True)   
+                    TdacTuning.handle_data = handle_data
+                    runmngr.run_run(TdacTuning,run_conf=tuning_conf, use_thread=True)   
                 if msg == "STOP":
                     runmngr.cancel_current_run(msg)
                     socket.send("%s Run Stopped" % runmngr.current_run.run_id)
@@ -152,10 +158,14 @@ def main():
 
         if get_status() != "RUNNING" and msg == "sanalog":
             socket.send("Start Analog Scan")
+            AnalogScan.analyze=skip
+            AnalogScan.handle_data = handle_data
             runmngr.run_run(AnalogScan, use_thread=True)
    
         if get_status() != "RUNNING" and msg == "sdigital":
-            socket.send("Start Analog Scan")
+            socket.send("Start Digital Scan")
+            DigitalScan.analyze=skip
+            DigitalScan.handle_data = handle_data
             runmngr.run_run(DigitalScan, use_thread=True)
             
         if msg == "poweron":
@@ -208,36 +218,29 @@ def main():
                 if get_status() == "FINISHED" and runmngr.current_run.run_id == "stuck_pixel_tuning":
                     add_done_message()
                     break
-        
-        if msg == "peek":
-            start = time.time()
-            while True:
-                if np.any(global_vars["hist_occ"]) != None: 
-                    plt.imshow(global_vars["hist_occ"], aspect="auto")
-                    plt.ylabel("Row")
-                    plt.xlabel("Coloumn")
-                    plt.show()
-                    break
-                if time.time() - start > 5:
-                    socket.send("Error")
-                    break 
-                else:
-                    time.sleep(0.05)
                     
         if msg == "framerate":
+            socket.send("old framerate:%s" % 1/global_vars["integration_time"])
             socket.send("input new framerate:")
             msg = socket.recv()
-            global_vars["integration_time"] = 1 / float(msg)
-            socket.send("new framerate:%s" % float(msg))
-
+            try:
+                global_vars["integration_time"] = 1 / float(msg)
+                socket.send("new framerate:%s" % float(msg))
+            except:
+                socket.send("invalid input")
+                
         if msg == "threshold":
+            socket.send("old threshold:%s" % tuning_conf["target_threshold"])
             socket.send("input new threshold:")
             msg = socket.recv()
-            run_conf["target_threshold"] = float(msg)
-            socket.send("new threshold:%s" % float(msg))
-            socket.send("use Tune to tune")
-
-
+            try:
+                tuning_conf["target_threshold"] = int(msg)
+                socket.send("new threshold:%s" % int(msg))
+                socket.send("press 'Tune' to tune")          
+            except:
+                socket.send("invalid input")
+        
+        
 def analyze_beam_hitrate(beam):
     if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
         if global_vars["hitrate"][-1] > np.mean(global_vars["hitrate"]) * 0.7:
@@ -261,11 +264,7 @@ def analyze(data_array):
     global global_vars
     
     if global_vars["integration_time"] < 0.05:
-        global_vars["integration_time"] = 0.05
-
-    #from Replay import Replay   
-    #rep = Replay() 
-    #for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/am_241_f.h5", real_time=False))):  
+        global_vars["integration_time"] = 0.05 
     for ro in data_array[0]:
         raw_data = ro[0]
         dr = is_data_record(raw_data)
@@ -283,21 +282,18 @@ def analyze(data_array):
   
             else:
                 global_vars["hist_occ"] += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
-
-#         if sum(global_vars["time"])==0:
-#             global_vars["time"].append(0)
         
-
         if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
             global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
             #print ("\nHitrate: %.0f Hz" % global_vars["hitrate"][-1])           
-#           global_vars["start_time"]=time.time()
-        #   global_vars["time"].append(global_vars["time"][-1]+timestamp_stop-global_vars["timestamp_start"][0])
         #      
 #         print "variance coloum: %s" % np.var(global_vars["coloumn"])
 #         print "variance row:    %s" % np.var(global_vars["row"])
         
-            global_vars["beam"] = analyze_beam_hitrate(global_vars["beam"])
+            if runmngr.current_run.run_id == "fei4_self_trigger_scan":
+                global_vars["beam"] = analyze_beam_hitrate(global_vars["beam"])
+            
+            
             p_hist = pickle.dumps(global_vars["hist_occ"], -1)
             zlib_hist = zlib.compress(p_hist)              
             socket2.send(zlib_hist)
@@ -314,41 +310,5 @@ def handle_data(self, data, new_file=False, flush=True):
 
 
 if __name__ == "__main__":
-    
     main()
-    #analyze(None)
 
-#     
-    # Plot Data
-#     global_vars["time"].remove(0)
-#     plt.plot(global_vars["time"],global_vars["hitrate"])
-#     plt.xlabel("Time [s]")
-#     plt.ylabel("Hitrate [Hz]")
-    
-    # Plot Hitrate distribution
-#     plt.hist(global_vars["hitrate"],bins=1000)
-#     plt.xlabel("hitrate [Hz]")
-#     plt.ylabel("occurence")  
-    # Plot Contour Plot of Data
-#     fig, ax = plt.subplots()
-#     CS = ax.contour(global_vars["hist_occ"])
-#     ax.grid(linewidth=0.5)
-#     plt.xlabel("coloumn")
-#     plt.ylabel("row")
- 
-#     plt.imshow(global_vars["hist_occ"], aspect="auto")
-#     plt.xlabel("coloumn")
-#     plt.ylabel("row")
-
-    # plt.plot(hits_per_event)
-    # plt.plot(hist_hit)
-#     plt.plot(rHit)
-#     plt.xlabel("index")
-#     plt.ylabel("mean hits per event")
-#     plt.text(1500, 30000, "marks 140-230")
-#     plt.axvline(140,linewidth=1, color='r')
-#     plt.axvline(230,linewidth=1, color='r')
-    # plt.axhline(y,linewidth=1, color='r')
-#     plt.axis([-80, 2200,np.min(0), np.max(1000)])
-
-#     plt.show()
