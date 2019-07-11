@@ -1,5 +1,6 @@
 ''' Communication with ELSA control system for E3 low current beam monitor'''
 
+
 import zmq
 import logging
 from basil.dut import Dut
@@ -11,6 +12,7 @@ from pybar.scans.scan_digital import DigitalScan
 from pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
 from pybar.scans.tune_stuck_pixel import StuckPixelTuning
 from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
+import datetime
 import time
 from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array
 import numpy as np
@@ -19,7 +21,7 @@ import zlib
 import cPickle as pickle
 
 conf = {
-    "port_slow_controll":5000,
+    "port_slow_control":5000,
     "port_hit_map":5002,
     }
 
@@ -33,7 +35,8 @@ global_vars = {
     "timestamp_start":[],
     "integration_time": .1,
     "hitrate":[],
-    "beam":False
+    "beam":True,
+    "analyze":True
     }
 
 from pybar.daq import fifo_readout
@@ -49,7 +52,7 @@ tuning_conf = {"target_threshold": 54}
 
 context = zmq.Context()
 socket = context.socket(zmq.PAIR)
-socket.connect("tcp://127.0.0.1:%s" % conf["port_slow_controll"])
+socket.connect("tcp://127.0.0.1:%s" % conf["port_slow_control"])
 
 context2 = zmq.Context()
 socket2 = context2.socket(zmq.PUB)
@@ -80,7 +83,8 @@ def add_done_message():
 
         
 def main():
-    while True:  # should alwayz run no blocking
+# should alwayz run no blocking    
+    while True:  
         msg = socket.recv()
         
         if get_status() != "RUNNING" and msg == "init":
@@ -187,7 +191,11 @@ def main():
                 socket.send("Status=None")
             else:
                 socket.send(status)
-    
+            if runmngr.current_run.run_id == "fei4_self_trigger_scan":    
+                socket.send("hitrate: %.0f [Hz]" % global_vars["hitrate"][-1])
+                if len(global_vars["coloumn"])>0:
+                    socket.send("Beamspot: %s pixels" % [int(global_vars["coloumn"][-1]),int(global_vars["row"][-1])])
+                
         if get_status() != "RUNNING" and msg == "fix":
             socket.send("starting Noise Occupancy Tuning (~2min)")
             runmngr.run_run(NoiseOccupancyTuning, use_thread=True)
@@ -239,23 +247,36 @@ def main():
                 socket.send("press 'Tune' to tune")          
             except:
                 socket.send("invalid input")
+                
+        if msg =="analyze":
+            if global_vars["analyze"]:
+                global_vars["analyze"]=False
+            else:
+                global_vars["analyze"]=True
         
-        
-def analyze_beam_hitrate(beam):
+def analyze_beam(beam):
     if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
         if global_vars["hitrate"][-1] > np.mean(global_vars["hitrate"]) * 0.7:
             global_vars["baseline"].append(global_vars["hitrate"][-1])
             b = np.mean(global_vars["baseline"])
-            if beam == True:
-                beam = False
-                socket.send("beam: on")
-            if global_vars["hitrate"][-1] > 2.5 * b:  # Hitrate Peak
-                print global_vars["hitrate"][-1]
-                socket.send("hitrate surpassed 250%")      
-        if  global_vars["hitrate"][-1] < np.mean(global_vars["hitrate"]) * 0.2:
             if beam == False:
                 beam = True
+                socket.send("beam: on")
+            #detect hitrate burst    
+            if global_vars["hitrate"][-1] > 2.5 * b:
+                socket.send("Time: %s" % datetime.datetime.now().time())  
+                socket.send("hitrate peak: %.0f [Hz]" % global_vars["hitrate"][-1])  
+        if  global_vars["hitrate"][-1] < np.mean(global_vars["hitrate"]) * 0.2:
+            if beam == True:
+                beam = False
                 socket.send("beam: off")
+            #detect moving beamspot
+        if beam==True:
+            if np.var(global_vars["coloumn"])>10 or np.var(global_vars["row"])>200:
+                socket.send("Time: %s" % datetime.datetime.now().time())
+                socket.send("Beamspot moved %0.f pixel" % np.sqrt((global_vars["coloumn"][-1]-global_vars["coloumn"][-2])**2+(global_vars["row"][-1]-global_vars["row"][-2])**2))
+                socket.send("from %s" % [int( global_vars["coloumn"][-2]),int(global_vars["row"][-2])])
+                socket.send("to     %s" % [int(global_vars["coloumn"][-1]),int(global_vars["row"][-1])])
     return beam
 
 
@@ -285,13 +306,13 @@ def analyze(data_array):
         
         if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
             global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
-            #print ("\nHitrate: %.0f Hz" % global_vars["hitrate"][-1])           
+          #  print ("\nHitrate: %.0f Hz" % global_vars["hitrate"][-1])           
         #      
-#         print "variance coloum: %s" % np.var(global_vars["coloumn"])
-#         print "variance row:    %s" % np.var(global_vars["row"])
-        
-            if runmngr.current_run.run_id == "fei4_self_trigger_scan":
-                global_vars["beam"] = analyze_beam_hitrate(global_vars["beam"])
+ #           print "variance coloum: %s" % np.var(global_vars["coloumn"])
+ #           print "variance row:    %s" % np.var(global_vars["row"])
+            
+            if runmngr.current_run.run_id == "fei4_self_trigger_scan" and global_vars["analyze"]:
+                global_vars["beam"] = analyze_beam(global_vars["beam"])
             
             
             p_hist = pickle.dumps(global_vars["hist_occ"], -1)
