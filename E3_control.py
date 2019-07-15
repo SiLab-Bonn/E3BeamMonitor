@@ -18,6 +18,7 @@ import numpy as np
 from pybar_fei4_interpreter import analysis_utils as fast_analysis_utils
 import zlib
 import cPickle as pickle
+from pybar.daq import fifo_readout
 
 conf = {
     "port_slow_control":5000,
@@ -38,7 +39,7 @@ global_vars = {
     "analyze":True
     }
 
-from pybar.daq import fifo_readout
+
 
 run_conf = {"scan_timeout": None,
             "no_data_timeout": None,
@@ -126,9 +127,7 @@ def main():
             break
             
         if get_status() != "RUNNING" and msg == "TUNE":
-
             socket.send("Start GdacTuning")
-            GdacTuning.handle_data = handle_data
             runmngr.run_run(GdacTuning, run_conf=tuning_conf, use_thread=True)
             while True:
                 time.sleep(1)
@@ -139,7 +138,6 @@ def main():
                 if get_status() == "FINISHED" and runmngr.current_run.run_id != "tdac_tuning":
                     add_done_message()
                     socket.send("Start TdacTuning")
-                    TdacTuning.handle_data = handle_data
                     runmngr.run_run(TdacTuning, run_conf=tuning_conf, use_thread=True)   
                 if msg == "STOP":
                     runmngr.cancel_current_run(msg)
