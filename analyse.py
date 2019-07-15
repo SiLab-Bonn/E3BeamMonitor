@@ -29,9 +29,9 @@ global_vars = {
     "time":[],
     "c":[],
     "r":[],
-    "analyze":True
+    "analyze":True,
+    "beamspot":[],
     }
-
 
 context = zmq.Context()
 socket = context.socket(zmq.PAIR)
@@ -41,16 +41,16 @@ context2 = zmq.Context()
 socket2 = context2.socket(zmq.PUB)
 socket2.bind("tcp://127.0.0.1:%s" % conf["port_hit_map"])
 
+
 # @profile
 def analyze():
     global global_vars
     
     if global_vars["integration_time"] < 0.05:
         global_vars["integration_time"] = 0.05
-
  
     rep = Replay() 
-    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/am_241_p_threshold54_moving.h5", real_time=True))):  
+    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/110_mimosa_telescope_testbeam_14122016_fei4_self_trigger_scan.h5", real_time=False))):  
         raw_data = ro[0]
         dr = is_data_record(raw_data)
         global_vars["timestamp_start"].append(ro[1])
@@ -66,33 +66,28 @@ def analyze():
             else:
                 global_vars["hist_occ"] += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
             #    global_vars["hist_occ"] += fast_analysis_utils.hist_2d_index(np.mean(col), np.mean(row), shape=(81, 337))
-        if len(global_vars["time"])==0:
+        if len(global_vars["time"]) == 0:
             global_vars["time"].append(0)
-        
 
         if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
             
-            
-            #print ("\nHitrate: %.0f Hz" % global_vars["hitrate"][-1])           
+            # print ("\nHitrate: %.0f Hz" % global_vars["hitrate"][-1])           
 #           global_vars["start_time"]=time.time()
-            global_vars["time"].append(global_vars["time"][-1]+timestamp_stop-global_vars["timestamp_start"][0])
-        #      
-        
+            
+            global_vars["time"].append(global_vars["time"][-1] + timestamp_stop - global_vars["timestamp_start"][0])
+            global_vars["c"].append(np.var(global_vars["coloumn"]))
+            global_vars["r"].append(np.var(global_vars["row"]))
+            #if len(global_vars["coloumn"]) > 1:    
+                #global_vars["beamspot"].append(np.sqrt((global_vars["coloumn"][-1] - global_vars["coloumn"][-2]) ** 2 + (global_vars["row"][-1] - global_vars["row"][-2]) ** 2))          
+
 #             print "\nmean coloum: %s" % np.mean(global_vars["coloumn"])
 #             print "mean row:    %s" % np.mean(global_vars["row"])
 #             print "variance coloum: %s" % np.var(global_vars["coloumn"])
 #             print "variance row:    %s" % np.var(global_vars["row"])
-        
-            global_vars["c"].append(np.mean(global_vars["coloumn"]))
-            global_vars["r"].append(np.mean(global_vars["row"]))
-
-
-                
 
             global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
             if global_vars["analyze"]:
                 global_vars["beam"] = analyze_beam(global_vars["beam"])
-            
             
             p_hist = pickle.dumps(global_vars["hist_occ"], -1)
             zlib_hist = zlib.compress(p_hist)              
@@ -102,11 +97,11 @@ def analyze():
             del global_vars["coloumn"][:]
             del global_vars["row"][:]
             del global_vars["timestamp_start"][:]
-            global_vars["hist_occ"] = None
+            #global_vars["hist_occ"] = None
             
 
 def analyze_beam(beam):
-    if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
+    if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:
         if global_vars["hitrate"][-1] > np.mean(global_vars["hitrate"]) * 0.7:
             global_vars["baseline"].append(global_vars["hitrate"][-1])
             b = np.mean(global_vars["baseline"])
@@ -119,46 +114,45 @@ def analyze_beam(beam):
             if beam == True:
                 beam = False
                 socket.send("beam: off")
-        if beam==True:
-            if np.var(global_vars["coloumn"])>10 or np.var(global_vars["row"])>200:
-                socket.send("Beamspot moved %0.f pixel" % np.sqrt((global_vars["coloumn"][-1]-global_vars["coloumn"][-2])**2+(global_vars["row"][-1]-global_vars["row"][-2])**2))
-                socket.send("from %s" % [int( global_vars["coloumn"][-2]),int(global_vars["row"][-2])])
-                socket.send("to     %s" % [int(global_vars["coloumn"][-1]),int(global_vars["row"][-1])])
+        if beam:
+            if np.var(global_vars["coloumn"]) > 7 or np.var(global_vars["row"]) > 170:
+                socket.send("Beamspot moved %0.f pixel" % np.sqrt((global_vars["coloumn"][-1] - global_vars["coloumn"][-2]) ** 2 + (global_vars["row"][-1] - global_vars["row"][-2]) ** 2))
+                socket.send("Time: %s" % global_vars["time"][-1])
+                socket.send("from %s" % [int(global_vars["coloumn"][-2]), int(global_vars["row"][-2])])
+                socket.send("to     %s" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
     return beam
 
 
-
-
 if __name__ == "__main__":
-    
 
     analyze()
 
 #     
     # Plot Data
-#     global_vars["time"].remove(0)
-#     plt.subplot(2,1,1)
-#     plt.plot(global_vars["time"],global_vars["hitrate"])
+    global_vars["time"].remove(0)
+    plt.subplot(4,1,1)
+    plt.hist(global_vars["hitrate"],bins=1000)
+    plt.xlabel("hitrate [Hz]")
+    plt.ylabel("occurence")  
+    plt.subplot(4,1,2)
+    plt.plot(global_vars["time"],global_vars["hitrate"])
+    plt.xlabel("Time [s]")
+    plt.ylabel("Hitrate [Hz]")
+    plt.subplot(4,1,3)
+    plt.plot(global_vars["time"],global_vars["c"])
+    plt.xlabel("Time [s]")
+    plt.ylabel("variance coloumn")
+    plt.subplot(4,1,4)
+    plt.plot(global_vars["time"],global_vars["r"])
+    plt.xlabel("Time [s]")
+    plt.ylabel("variance row") 
+#     plt.subplot(5,1,3)
+#     plt.plot(global_vars["time"], global_vars["beamspot"])
 #     plt.xlabel("Time [s]")
-#     plt.ylabel("Hitrate [Hz]")
-#     plt.subplot(2,1,2)
-#     plt.hist(global_vars["hitrate"],bins=1000)
-#     plt.xlabel("hitrate [Hz]")
+#     plt.ylabel("beamspot moving [pixel")   
+#     plt.hist(global_vars["beamspot"],bins=1000)
+#     plt.xlabel("beamspot moving [pixel]")
 #     plt.ylabel("occurence")  
-
-
-#     global_vars["time"].remove(0)
-#     plt.subplot(2,1,1)
-#     plt.plot(global_vars["time"],global_vars["c"])
-#     plt.xlabel("Time [s]")
-#     plt.ylabel("coloumn")
-#     plt.subplot(2,1,2)
-#     plt.plot(global_vars["time"],global_vars["r"])
-#     plt.xlabel("Time [s]")
-#     plt.ylabel("row")  
-
-
-
 
     # Plot Contour Plot of Data
     fig, ax = plt.subplots()
@@ -167,12 +161,12 @@ if __name__ == "__main__":
     plt.xlabel("coloumn")
     plt.ylabel("row")
     #plt.colorbar(CS)
- 
+  
     plt.imshow(global_vars["hist_occ"], aspect="auto")
     plt.xlabel("coloumn")
     plt.ylabel("row")
     plt.colorbar()
-    
+    plt.title("Hit Occurence")
     # plt.plot(hits_per_event)
     # plt.plot(hist_hit)
 #     plt.plot(rHit)
