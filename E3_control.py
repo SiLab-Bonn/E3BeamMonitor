@@ -11,6 +11,7 @@ from pybar.scans.scan_digital import DigitalScan
 from pybar.scans.tune_noise_occupancy import NoiseOccupancyTuning
 from pybar.scans.tune_stuck_pixel import StuckPixelTuning
 from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
+from pybar.scans.scan_ext_trigger import ExtTriggerScan
 import datetime
 import time
 from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array
@@ -25,7 +26,7 @@ conf = {
     "port_hit_map":5002,
     }
 
-# global variables
+#global variables
 global_vars = {
     "hits":[],
     "baseline":[],
@@ -33,7 +34,7 @@ global_vars = {
     "row":[],
     "hist_occ": None,
     "timestamp_start":[],
-    "integration_time": .1,
+    "integration_time": 0.05,
     "hitrate":[],
     "beam":True,
     "analyze":True
@@ -44,6 +45,14 @@ global_vars = {
 run_conf = {"scan_timeout": None,
             "no_data_timeout": None,
             "reset_rx_on_error": False,
+            }
+
+run_conf_ext = {"scan_timeout": None,
+            "no_data_timeout": None,
+            "reset_rx_on_error": False,
+            "max_triggers": 0,
+            "col_span": [1, 80],  
+            "row_span": [1, 336],
             }
 
 tuning_conf = {"target_threshold": 54}
@@ -68,10 +77,6 @@ except Exception:
 runmngr = RunManager("/home/rasmus/git/pyBAR/pybar/configuration.yaml")
 
 
-def skip(raw_data):
-    pass
-
-
 def get_status():
     if runmngr.current_run:
         return runmngr.current_run.get_run_status()
@@ -81,6 +86,14 @@ def add_done_message():
     if runmngr.current_run:
         socket.send("Scan finished: %s" % runmngr.current_run.run_id)
 
+def del_var():
+    del global_vars["hits"][:]
+    del global_vars["coloumn"][:]
+    del global_vars["row"][:]
+    del global_vars["timestamp_start"][:]
+    del global_vars["hitrate"][:]
+    del global_vars["baseline"][:]
+    global_vars["hist_occ"] = None    
         
 def main():
 # should alwayz run no blocking    
@@ -93,8 +106,6 @@ def main():
                 power_on()
                 socket.send_string("voltage channel 1 = %s " % voltage_channel1())
                 socket.send_string("voltage channel 2 = %s " % voltage_channel2())
-                DigitalScan.analyze = skip
-                DigitalScan.handle_data = handle_data
                 runmngr.run_run(run=DigitalScan,)
             except (SystemExit,):
                 raise
@@ -115,6 +126,7 @@ def main():
             
         if get_status() == "RUNNING" and msg == "STOP":
             fifo_readout.WRITE_INTERVAL = 1
+            del_var()
             runmngr.cancel_current_run(msg)
             socket.send("%s Run Stopped" % runmngr.current_run.run_id)
     
@@ -159,14 +171,10 @@ def main():
 
         if get_status() != "RUNNING" and msg == "sanalog":
             socket.send("Start Analog Scan")
-            AnalogScan.analyze = skip
-            AnalogScan.handle_data = handle_data
             runmngr.run_run(AnalogScan, use_thread=True)
    
         if get_status() != "RUNNING" and msg == "sdigital":
             socket.send("Start Digital Scan")
-            DigitalScan.analyze = skip
-            DigitalScan.handle_data = handle_data
             runmngr.run_run(DigitalScan, use_thread=True)
             
         if msg == "poweron":
@@ -183,15 +191,15 @@ def main():
             socket.send_string("voltage channel 1 = %s" % voltage_channel1())
             socket.send_string("voltage channel 2 = %s" % voltage_channel2())   
             status = get_status()
-            socket.send(runmngr.current_run.run_id)
             if status == None:
                 socket.send("Status=None")
             else:
+                socket.send(runmngr.current_run.run_id)
                 socket.send(status)
-            if runmngr.current_run.run_id == "fei4_self_trigger_scan":    
-                socket.send("hitrate: %.0f [Hz]" % global_vars["hitrate"][-1])
-                if len(global_vars["coloumn"]) > 0:
-                    socket.send("Beamspot: %s pixels" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
+                if runmngr.current_run.run_id == "fei4_self_trigger_scan" and get_status() == "RUNNING":    
+                    socket.send("hitrate: %.0f [Hz]" % global_vars["hitrate"][-1])
+                    if len(global_vars["coloumn"]) > 0:
+                        socket.send("Beamspot: %s pixels" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
                 
         if get_status() != "RUNNING" and msg == "fix":
             socket.send("starting Noise Occupancy Tuning (~2min)")
@@ -225,12 +233,12 @@ def main():
                     break
                     
         if msg == "framerate":
-            socket.send("old framerate:%s" % 1 / global_vars["integration_time"])
+            socket.send("old framerate:%1.1f" % float(1/ global_vars["integration_time"]))
             socket.send("input new framerate:")
             msg = socket.recv()
             try:
                 global_vars["integration_time"] = 1 / float(msg)
-                socket.send("new framerate:%s" % float(msg))
+                socket.send("new framerate:%1.1f" % float(1/ global_vars["integration_time"]))
             except:
                 socket.send("invalid input")
                 
@@ -251,6 +259,10 @@ def main():
             else:
                 global_vars["analyze"] = True
 
+        if get_status() != "RUNNING" and msg == "ext":
+            ExtTriggerScan.handle_data = handle_data
+            runmngr.run_run(run=ExtTriggerScan,run_conf=run_conf_ext, use_thread=True)
+            
         
 def analyze_beam(beam):
     if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
@@ -304,7 +316,7 @@ def analyze(data_array):
         
         if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
             global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
-#           print ("\nHitrate: %.0f Hz" % global_vars["hitrate"][-1])           
+#             print ("\nHitrate: %.0f Hz" % np.mean(global_vars["hitrate"]))           
 #           print "variance coloum: %s" % np.var(global_vars["coloumn"])
 #           print "variance row:    %s" % np.var(global_vars["row"])
             
@@ -324,7 +336,7 @@ def analyze(data_array):
 
 def handle_data(self, data, new_file=False, flush=True):
     analyze(data)
-
+    
 
 if __name__ == "__main__":
     main()
