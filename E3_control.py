@@ -14,12 +14,13 @@ from pybar.scans.scan_fei4_self_trigger import Fei4SelfTriggerScan
 from pybar.scans.scan_ext_trigger import ExtTriggerScan
 import datetime
 import time
-from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array
+from pybar.daq.readout_utils import is_data_record, get_col_row_array_from_data_record_array, is_fe_word
 import numpy as np
 from pybar_fei4_interpreter import analysis_utils as fast_analysis_utils
 import zlib
 import cPickle as pickle
 from pybar.daq import fifo_readout
+from pybar.daq import readout_utils as ru
 
 conf = {
     "port_slow_control":5000,
@@ -260,7 +261,8 @@ def main():
                 global_vars["analyze"] = True
 
         if get_status() != "RUNNING" and msg == "ext":
-            ExtTriggerScan.handle_data = handle_data
+            ExtTriggerScan.run_conf=run_conf_ext
+            ExtTriggerScan.handle_data=handle_data
             runmngr.run_run(run=ExtTriggerScan,run_conf=run_conf_ext, use_thread=True)
             
         
@@ -290,6 +292,9 @@ def analyze_beam(beam):
     return beam
 
 
+def is_record(value):
+    return np.logical_and(is_data_record(value), is_fe_word(value))
+
 #@profile
 def analyze(data_array):
     global global_vars
@@ -298,27 +303,24 @@ def analyze(data_array):
         global_vars["integration_time"] = 0.05 
     for ro in data_array[0]:
         raw_data = ro[0]
-        dr = is_data_record(raw_data)
+        data_record = ru.convert_data_array(raw_data, filter_func=is_record)   
         global_vars["timestamp_start"].append(ro[1])
         timestamp_stop = ro[2]                            
-        global_vars["hits"].append(len(raw_data[dr]))                                              
-        if np.any(dr):
-            col, row = get_col_row_array_from_data_record_array(raw_data[dr])
+        global_vars["hits"].append(len(raw_data[data_record]))
+                                                      
+        if np.any(data_record):
+            col, row = get_col_row_array_from_data_record_array(raw_data[data_record])
              
             global_vars["coloumn"].append(np.mean(col))
             global_vars["row"].append(np.mean(row)) 
                                 
             if not np.any(global_vars["hist_occ"]):
                 global_vars["hist_occ"] = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
-  
             else:
                 global_vars["hist_occ"] += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
         
         if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
             global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
-#             print ("\nHitrate: %.0f Hz" % np.mean(global_vars["hitrate"]))           
-#           print "variance coloum: %s" % np.var(global_vars["coloumn"])
-#           print "variance row:    %s" % np.var(global_vars["row"])
             
             if runmngr.current_run.run_id == "fei4_self_trigger_scan" and global_vars["analyze"]:
                 global_vars["beam"] = analyze_beam(global_vars["beam"])
