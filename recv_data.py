@@ -1,3 +1,4 @@
+'''recieves and displays Data (OnlineMonitor)'''
 import sys
 import time
 from threading import Event, Lock
