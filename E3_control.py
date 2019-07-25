@@ -1,4 +1,4 @@
-''' Communication with ELSA control system for E3 low current beam monitor'''
+'''Communication with ELSA control system for E3 low current beam monitor'''
 
 import zmq
 import logging
@@ -38,7 +38,7 @@ global_vars = {
     "integration_time": 0.05,
     "hitrate":[],
     "beam":True,
-    "analyze":True
+    "analyse":True,
     }
 
 
@@ -54,6 +54,9 @@ run_conf_ext = {"scan_timeout": None,
             "max_triggers": 0,
             "col_span": [1, 80],  
             "row_span": [1, 336],
+            "trigger_delay": 8,
+            "trigger_rate_limit": 500,
+            "trig_count": 0,
             }
 
 tuning_conf = {"target_threshold": 54}
@@ -94,7 +97,8 @@ def del_var():
     del global_vars["timestamp_start"][:]
     del global_vars["hitrate"][:]
     del global_vars["baseline"][:]
-    global_vars["hist_occ"] = None    
+    global_vars["hist_occ"] = None
+        
         
 def main():
 # should alwayz run no blocking    
@@ -197,7 +201,7 @@ def main():
             else:
                 socket.send(runmngr.current_run.run_id)
                 socket.send(status)
-                if runmngr.current_run.run_id == "fei4_self_trigger_scan" and get_status() == "RUNNING":    
+                if (runmngr.current_run.run_id == "fei4_self_trigger_scan" or runmngr.current_run.run_id == "ext_trigger_scan") and get_status() == "RUNNING":    
                     socket.send("hitrate: %.0f [Hz]" % global_vars["hitrate"][-1])
                     if len(global_vars["coloumn"]) > 0:
                         socket.send("Beamspot: %s pixels" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
@@ -254,19 +258,20 @@ def main():
             except:
                 socket.send("invalid input")
                 
-        if msg == "analyze":
-            if global_vars["analyze"]:
-                global_vars["analyze"] = False
+        if msg == "analyse":
+            if global_vars["analyse"]:
+                global_vars["analyse"] = False
             else:
-                global_vars["analyze"] = True
+                global_vars["analyse"] = True
 
         if get_status() != "RUNNING" and msg == "ext":
+            fifo_readout.WRITE_INTERVAL = 0.05
             ExtTriggerScan.run_conf=run_conf_ext
             ExtTriggerScan.handle_data=handle_data
             runmngr.run_run(run=ExtTriggerScan,run_conf=run_conf_ext, use_thread=True)
             
         
-def analyze_beam(beam):
+def analyse_beam(beam):
     if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
         if global_vars["hitrate"][-1] > np.mean(global_vars["hitrate"]) * 0.7:
             global_vars["baseline"].append(global_vars["hitrate"][-1])
@@ -284,11 +289,14 @@ def analyze_beam(beam):
                 socket.send("beam: off")
             # detect moving beamspot
         if beam:
-            if np.var(global_vars["coloumn"]) > 7 or np.var(global_vars["row"]) > 170:
+            if np.var(global_vars["coloumn"]) > 100 or np.var(global_vars["row"]) > 500:
                 socket.send("Time: %s" % datetime.datetime.now().time())
-                socket.send("Beamspot moved %0.f pixel" % np.sqrt((global_vars["coloumn"][-1] - global_vars["coloumn"][-2]) ** 2 + (global_vars["row"][-1] - global_vars["row"][-2]) ** 2))
-                socket.send("from %s" % [int(global_vars["coloumn"][-2]), int(global_vars["row"][-2])])
-                socket.send("to     %s" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
+                socket.send("Beam moved")
+#                 socket.send("Beamspot moved %f mm" % np.sqrt(((global_vars["coloumn"][-1] - global_vars["coloumn"][-2])*0.25) ** 2 + ((global_vars["row"][-1] - global_vars["row"][-2])*0.05) ** 2))
+#                 socket.send("from %s" % [int(global_vars["coloumn"][-2]), int(global_vars["row"][-2])])
+#                 socket.send("to     %s" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
+                del global_vars["coloumn"][:]
+                del global_vars["row"][:]
     return beam
 
 
@@ -296,7 +304,7 @@ def is_record(value):
     return np.logical_and(is_data_record(value), is_fe_word(value))
 
 #@profile
-def analyze(data_array):
+def analyse(data_array):
     global global_vars
     
     if global_vars["integration_time"] < 0.05:
@@ -306,10 +314,10 @@ def analyze(data_array):
         data_record = ru.convert_data_array(raw_data, filter_func=is_record)   
         global_vars["timestamp_start"].append(ro[1])
         timestamp_stop = ro[2]                            
-        global_vars["hits"].append(len(raw_data[data_record]))
+        global_vars["hits"].append(len(data_record))
                                                       
         if np.any(data_record):
-            col, row = get_col_row_array_from_data_record_array(raw_data[data_record])
+            col, row = get_col_row_array_from_data_record_array(data_record)
              
             global_vars["coloumn"].append(np.mean(col))
             global_vars["row"].append(np.mean(row)) 
@@ -322,22 +330,20 @@ def analyze(data_array):
         if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
             global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
             
-            if runmngr.current_run.run_id == "fei4_self_trigger_scan" and global_vars["analyze"]:
-                global_vars["beam"] = analyze_beam(global_vars["beam"])
+            if (runmngr.current_run.run_id == "fei4_self_trigger_scan" or runmngr.current_run.run_id == "ext_trigger_scan") and global_vars["analyse"]:
+                global_vars["beam"] = analyse_beam(global_vars["beam"])
             
             p_hist = pickle.dumps(global_vars["hist_occ"], -1)
             zlib_hist = zlib.compress(p_hist)              
             socket2.send(zlib_hist)
             # free memory of global variables
             del global_vars["hits"][:]
-            del global_vars["coloumn"][:]
-            del global_vars["row"][:]
             del global_vars["timestamp_start"][:]
             global_vars["hist_occ"] = None
-
+        
 
 def handle_data(self, data, new_file=False, flush=True):
-    analyze(data)
+    analyse(data)
     
 
 if __name__ == "__main__":
