@@ -42,28 +42,33 @@ global_vars = {
     }
 
 
+#run configuration for self trigger scan
+run_conf = {
+    "scan_timeout": None,
+    "no_data_timeout": None,
+    "reset_rx_on_error": False,
+    }
+#run configuration for external trigger scan
+run_conf_ext = {
+    "scan_timeout": None,
+    "no_data_timeout": None,
+    "reset_rx_on_error": False,
+    "max_triggers": 0,
+    "col_span": [1, 80],  
+    "row_span": [1, 336],
+    "trigger_delay": 8,
+    "trigger_rate_limit": 500,
+    "trig_count": 0,
+    }
 
-run_conf = {"scan_timeout": None,
-            "no_data_timeout": None,
-            "reset_rx_on_error": False,
-            }
-
-run_conf_ext = {"scan_timeout": None,
-            "no_data_timeout": None,
-            "reset_rx_on_error": False,
-            "max_triggers": 0,
-            "col_span": [1, 80],  
-            "row_span": [1, 336],
-            "trigger_delay": 8,
-            "trigger_rate_limit": 500,
-            "trig_count": 0,
-            }
-
-tuning_conf = {"target_threshold": 54}
+tuning_conf = {
+    "target_threshold": 54
+    }
 
 context = zmq.Context()
 socket = context.socket(zmq.PAIR)
 socket.connect("tcp://127.0.0.1:%s" % conf["port_slow_control"])
+socket.setsockopt(zmq.IDENTITY, b'ELSA DAQ')
 
 context2 = zmq.Context()
 socket2 = context2.socket(zmq.PUB)
@@ -125,14 +130,13 @@ def main():
             Fei4SelfTriggerScan.handle_data = handle_data
             runmngr.run_run(run=Fei4SelfTriggerScan, run_conf=run_conf, use_thread=True)
             time.sleep(1)
-            # status = get_status()
             socket.send("%s" % runmngr.current_run.run_id)
             socket.send(get_status())
             
         if get_status() == "RUNNING" and msg == "STOP":
+            runmngr.cancel_current_run(msg)
             fifo_readout.WRITE_INTERVAL = 1
             del_var()
-            runmngr.cancel_current_run(msg)
             socket.send("%s Run Stopped" % runmngr.current_run.run_id)
     
         if msg == "exit":
@@ -264,7 +268,7 @@ def main():
             else:
                 global_vars["analyse"] = True
 
-        if get_status() != "RUNNING" and msg == "ext":
+        if get_status() != "RUNNING" and msg == "external":
             fifo_readout.WRITE_INTERVAL = 0.05
             ExtTriggerScan.run_conf=run_conf_ext
             ExtTriggerScan.handle_data=handle_data
@@ -273,7 +277,7 @@ def main():
         
 def analyse_beam(beam):
     if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
-        if global_vars["hitrate"][-1] > np.mean(global_vars["hitrate"]) * 0.7:
+        if global_vars["hitrate"][-1] > np.median(global_vars["hitrate"]) * 0.7:
             global_vars["baseline"].append(global_vars["hitrate"][-1])
             b = np.mean(global_vars["baseline"])
             if beam == False:
@@ -283,7 +287,7 @@ def analyse_beam(beam):
             if global_vars["hitrate"][-1] > 2.5 * b:
                 socket.send("Time: %s" % datetime.datetime.now().time())  
                 socket.send("hitrate peak: %.0f [Hz]" % global_vars["hitrate"][-1])  
-        if  global_vars["hitrate"][-1] < np.mean(global_vars["hitrate"]) * 0.2:
+        if  global_vars["hitrate"][-1] < np.median(global_vars["hitrate"]) * 0.2:
             if beam == True:
                 beam = False
                 socket.send("beam: off")
@@ -308,7 +312,7 @@ def analyse(data_array):
     global global_vars
     
     if global_vars["integration_time"] < 0.05:
-        global_vars["integration_time"] = 0.05 
+        global_vars["integration_time"] = 0.05
     for ro in data_array[0]:
         raw_data = ro[0]
         data_record = ru.convert_data_array(raw_data, filter_func=is_record)   
