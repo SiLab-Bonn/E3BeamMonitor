@@ -61,23 +61,59 @@ class Eldasi(QWidget):
 
         # Quick ELSA commands widgets
         commands_layout = QHBoxLayout()
+        commands_layout2 = QHBoxLayout()
+        commands_layout3 = QHBoxLayout()
         start_button = QPushButton("Start")
         start_button.clicked.connect(lambda: self._send_data("START"))
         commands_layout.addWidget(start_button)
         stop_button = QPushButton("Stop")
         stop_button.clicked.connect(lambda: self._send_data("STOP"))
         commands_layout.addWidget(stop_button)
-        tune_button = QPushButton("Tune")
+        status_button = QPushButton("Status")
+        status_button.clicked.connect(lambda: self._send_data("status"))
+        commands_layout.addWidget(status_button)
+        init_button = QPushButton("Init")
+        init_button.clicked.connect(lambda: self._send_data("init"))
+        commands_layout.addWidget(init_button)
+        
+        tune_button = QPushButton("GDAC/TDAC")
         tune_button.clicked.connect(lambda: self._send_data("TUNE"))
-        commands_layout.addWidget(tune_button)
-        self.toggle_widgets.extend([start_button, stop_button, tune_button])
-
+        commands_layout2.addWidget(tune_button)
+        fix_button = QPushButton("fix")
+        fix_button.clicked.connect(lambda: self._send_data("fix"))
+        commands_layout2.addWidget(fix_button)
+        threshold_button = QPushButton("Threshold")
+        threshold_button.clicked.connect(lambda: self._send_data("threshold"))
+        commands_layout2.addWidget(threshold_button)        
+        framerate_button = QPushButton("Framerate")
+        framerate_button.clicked.connect(lambda: self._send_data("framerate"))
+        commands_layout2.addWidget(framerate_button)     
+        
+        
+        external_button = QPushButton("Scan_ext")
+        external_button.clicked.connect(lambda: self._send_data("external"))
+        commands_layout3.addWidget(external_button)
+        poweron_button = QPushButton("Power on")
+        poweron_button.clicked.connect(lambda: self._send_data("poweron"))
+        commands_layout3.addWidget(poweron_button)
+        poweroff_button = QPushButton("Power off")
+        poweroff_button.clicked.connect(lambda: self._send_data("poweroff"))
+        commands_layout3.addWidget(poweroff_button)
+        exit_button = QPushButton("EXIT")
+        exit_button.clicked.connect(lambda: self._send_data("exit"))
+        commands_layout3.addWidget(exit_button)        
+        
+        self.toggle_widgets.extend([start_button, stop_button, tune_button, init_button, fix_button, poweron_button, poweroff_button, status_button, external_button, threshold_button, framerate_button, exit_button])
+        
+        
         # Combine widgets to layout
         layout = QGridLayout()
         layout.addWidget(self.log_text, 1, 1)
         layout.addLayout(connections_layout, 2, 1)
         layout.addLayout(commands_layout, 3, 1)
-        layout.addLayout(send_layout, 4, 1)
+        layout.addLayout(commands_layout2, 4, 1)
+        layout.addLayout(commands_layout3, 5, 1)
+        layout.addLayout(send_layout, 6, 1)
         self.setLayout(layout)
 
         # Window settings
