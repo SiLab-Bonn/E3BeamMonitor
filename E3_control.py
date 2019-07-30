@@ -22,6 +22,7 @@ import cPickle as pickle
 from pybar.daq import fifo_readout
 from pybar.daq import readout_utils as ru
 
+#ports for zmq
 conf = {
     "port_slow_control":5000,
     "port_hit_map":5002,
@@ -61,6 +62,7 @@ run_conf_ext = {
     "trig_count": 0,
     }
 
+#GDAC/TDAC Threshold
 tuning_conf = {
     "target_threshold": 54
     }
@@ -105,7 +107,7 @@ def del_var():
     global_vars["hist_occ"] = None
         
         
-def main():
+def slow_control():
 # should alwayz run no blocking    
     while True:  
         msg = socket.recv()
@@ -283,7 +285,7 @@ def analyse_beam(beam):
             if beam == False:
                 beam = True
                 socket.send("beam: on")
-            # detect hitrate burst    
+            # detect hitrate burst if its over 250%   
             if global_vars["hitrate"][-1] > 2.5 * b:
                 socket.send("Time: %s" % datetime.datetime.now().time())  
                 socket.send("hitrate peak: %.0f [Hz]" % global_vars["hitrate"][-1])  
@@ -293,11 +295,12 @@ def analyse_beam(beam):
                 socket.send("beam: off")
             # detect moving beamspot
         if beam:
+            #Variance limit for row, coloumn
             if np.var(global_vars["coloumn"]) > 100 or np.var(global_vars["row"]) > 500:
                 try:
                     socket.send("Time: %s" % datetime.datetime.now().time())
                     socket.send("Beam moved")
-                    socket.send("Beamspot moved %f mm" % np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.25) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.05) ** 2))
+                    socket.send("Beamspot moved %0.2f mm" % np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.25) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.05) ** 2))
                     del global_vars["coloumn"][:]
                     del global_vars["row"][:]
                 except:
@@ -345,8 +348,8 @@ def analyse(data_array):
             del global_vars["hits"][:]
             del global_vars["timestamp_start"][:]
             global_vars["hist_occ"] = None
-            #durch mediane wird die Variance bei grossen Zeiten kleiner, dies loescht die Variabeln und haelt die statistische Variance konstant
-            # ein verkleinern der Zahl fuehrt zu einer vergroesserten Sensitivitaet
+            #single variance gets diminished for long mesurements, this resets the variables after some time
+            #diminishing the number leads to more sensitivity
             if len(global_vars["coloumn"])>100:
                     del global_vars["coloumn"][:]
                     del global_vars["row"][:]
@@ -357,5 +360,5 @@ def handle_data(self, data, new_file=False, flush=True):
     
 
 if __name__ == "__main__":
-    main()
+    slow_control()
 
