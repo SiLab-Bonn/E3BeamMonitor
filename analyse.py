@@ -59,7 +59,7 @@ def analyse():
 
  
     rep = Replay() 
-    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/10_scc_167_fei4_self_trigger_scan.h5", real_time=False))):
+    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/moving_beam/24_module_0_fei4_self_trigger_scan.h5", real_time=False))):
     
         raw_data = ro[0]
         
@@ -77,8 +77,8 @@ def analyse():
         
         if np.any(data_record):
             col, row = get_col_row_array_from_data_record_array(data_record)
-            global_vars["coloumn"].append(np.mean(col))
-            global_vars["row"].append(np.mean(row))               
+            global_vars["coloumn"].append(np.median(col))
+            global_vars["row"].append(np.median(row))               
             if not np.any(global_vars["hist_occ"]):
                 global_vars["hist_occ"] = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
             #    global_vars["hist_occ"] = fast_analysis_utils.hist_2d_index(np.mean(col), np.mean(row), shape=(81, 337))
@@ -91,8 +91,8 @@ def analyse():
 
             if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
                 global_vars["time"].append(global_vars["time"][-1] + timestamp_stop - global_vars["timestamp_start"][0])
-                global_vars["c"].append(np.mean(col))
-                global_vars["r"].append(np.mean(row))
+                global_vars["c"].append(np.var(global_vars["coloumn"]))
+                global_vars["r"].append(np.var(global_vars["row"]))
                 global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
                 if global_vars["analyse"]:
                     global_vars["beam"] = analyse_beam(global_vars["beam"])
@@ -103,14 +103,15 @@ def analyse():
     #             # free memory of global variables
                 del global_vars["hits"][:]
                 del global_vars["timestamp_start"][:]
-                del global_vars["coloumn"][:]
-                del global_vars["row"][:]
                 global_vars["hist_occ"] = None
+                if len(global_vars["coloumn"])>100:
+                    del global_vars["coloumn"][:]
+                    del global_vars["row"][:]
 
 def analyse_beam(beam):
     if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:
         if global_vars["hitrate"][-1] > np.median(global_vars["hitrate"]) * 0.7:
-            global_vars["baseline"].append(global_vars["hitrate"][-1])
+            global_vars["baseline"].append(np.median(global_vars["hitrate"]))
             b = np.mean(global_vars["baseline"])
             if beam == False:
                 beam = True
@@ -122,11 +123,18 @@ def analyse_beam(beam):
                 beam = False
                 socket.send("beam: off")
         if beam:
+            global_vars["beamspot"].append(np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.25) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.05) ** 2))
+    
             if np.var(global_vars["coloumn"]) > 100 or np.var(global_vars["row"]) > 500:
-#                 socket.send("Beamspot moved %0.2f mm" % np.sqrt(((global_vars["coloumn"][-1] - global_vars["coloumn"][-3])*0.250) ** 2 + ((global_vars["row"][-1] - global_vars["row"][-3])*0.050) ** 2))
-                socket.send("Time: %s" % global_vars["time"][-1])
-                socket.send("from %s" % [int(global_vars["coloumn"][-2]), int(global_vars["row"][-2])])
-                socket.send("to     %s" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
+                try:
+                    socket.send("Beamspot moved %0.2f mm" % np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.250) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.050) ** 2))
+                    socket.send("Time: %s" % global_vars["time"][-1])
+                    del global_vars["coloumn"][:]
+                    del global_vars["row"][:]
+                except:
+                    pass
+#                 socket.send("from %s" % [int(global_vars["coloumn"][-2]), int(global_vars["row"][-2])])
+#                 socket.send("to     %s" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
 
     return beam
 
@@ -138,28 +146,28 @@ if __name__ == "__main__":
     # Plot Data
     global_vars["time"].remove(0)
 #     plt.subplot(3,1,1)
-    plt.plot(global_vars["time"],global_vars["hitrate"])
-    plt.xlabel("Time [s]")
-    plt.ylabel("Hitrate [Hz]")
-    plt.hlines(np.mean(global_vars["baseline"]),xmin=0,xmax=40, colors='k', linestyles='solid', label='baseline')
-    plt.hlines(np.mean(global_vars["baseline"])*0.7,xmin=0,xmax=40, colors='r', linestyles='solid', label='baseline')
-    plt.hlines(np.mean(global_vars["baseline"])*0.2,xmin=0,xmax=40, colors='g', linestyles='solid', label='baseline')
-    plt.title("baselines")
+#     plt.plot(global_vars["time"],global_vars["hitrate"])
+#     plt.xlabel("Time [s]")
+#     plt.ylabel("Hitrate [Hz]")
+#     plt.hlines(np.mean(global_vars["baseline"]),xmin=0,xmax=40, colors='k', linestyles='solid', label='baseline')
+#     plt.hlines(np.mean(global_vars["baseline"])*0.7,xmin=0,xmax=40, colors='r', linestyles='solid', label='baseline')
+#     plt.hlines(np.mean(global_vars["baseline"])*0.2,xmin=0,xmax=40, colors='g', linestyles='solid', label='baseline')
+#     plt.title("baselines")
 #     plt.subplot(2,1,1)
 #     plt.plot(global_vars["time"],global_vars["c"])
-#     plt.ylabel("mean coloumn")
+#     plt.ylabel("var coloumn")
 #     plt.xlabel("Time [s]")
 #     plt.subplot(2,1,2)
 #     plt.plot(global_vars["time"],global_vars["r"])
-#     plt.ylabel("mean row")
+#     plt.ylabel("var row")
 #     plt.xlabel("Time [s]")
       
 #     plt.subplot(5,1,3)
 #     plt.plot(global_vars["time"], global_vars["beamspot"])
 #     plt.xlabel("Time [s]")
 #     plt.ylabel("beamspot moving [pixel")   
-#     plt.hist(global_vars["beamspot"],bins=1000)
-#     plt.xlabel("beamspot moving [pixel]")
+#     plt.hist(global_vars["beamspot"],bins=100)
+#     plt.xlabel("beamspot moving [mm]")
 #     plt.ylabel("occurence")  
 
     # Plot Contour Plot of Data
