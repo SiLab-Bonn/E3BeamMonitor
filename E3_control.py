@@ -278,7 +278,7 @@ def main():
 def analyse_beam(beam):
     if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
         if global_vars["hitrate"][-1] > np.median(global_vars["hitrate"]) * 0.7:
-            global_vars["baseline"].append(global_vars["hitrate"][-1])
+            global_vars["baseline"].append(np.median(global_vars["hitrate"]))
             b = np.mean(global_vars["baseline"])
             if beam == False:
                 beam = True
@@ -294,13 +294,14 @@ def analyse_beam(beam):
             # detect moving beamspot
         if beam:
             if np.var(global_vars["coloumn"]) > 100 or np.var(global_vars["row"]) > 500:
-                socket.send("Time: %s" % datetime.datetime.now().time())
-                socket.send("Beam moved")
-#                 socket.send("Beamspot moved %f mm" % np.sqrt(((global_vars["coloumn"][-1] - global_vars["coloumn"][-2])*0.25) ** 2 + ((global_vars["row"][-1] - global_vars["row"][-2])*0.05) ** 2))
-#                 socket.send("from %s" % [int(global_vars["coloumn"][-2]), int(global_vars["row"][-2])])
-#                 socket.send("to     %s" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
-                del global_vars["coloumn"][:]
-                del global_vars["row"][:]
+                try:
+                    socket.send("Time: %s" % datetime.datetime.now().time())
+                    socket.send("Beam moved")
+                    socket.send("Beamspot moved %f mm" % np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.25) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.05) ** 2))
+                    del global_vars["coloumn"][:]
+                    del global_vars["row"][:]
+                except:
+                    pass
     return beam
 
 
@@ -323,8 +324,8 @@ def analyse(data_array):
         if np.any(data_record):
             col, row = get_col_row_array_from_data_record_array(data_record)
              
-            global_vars["coloumn"].append(np.mean(col))
-            global_vars["row"].append(np.mean(row)) 
+            global_vars["coloumn"].append(np.median(col))
+            global_vars["row"].append(np.median(row)) 
                                 
             if not np.any(global_vars["hist_occ"]):
                 global_vars["hist_occ"] = fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
@@ -344,7 +345,12 @@ def analyse(data_array):
             del global_vars["hits"][:]
             del global_vars["timestamp_start"][:]
             global_vars["hist_occ"] = None
-        
+            #durch mediane wird die Variance bei grossen Zeiten kleiner, dies loescht die Variabeln und haelt die statistische Variance konstant
+            # ein verkleinern der Zahl fuehrt zu einer vergroesserten Sensitivitaet
+            if len(global_vars["coloumn"])>100:
+                    del global_vars["coloumn"][:]
+                    del global_vars["row"][:]
+            
 
 def handle_data(self, data, new_file=False, flush=True):
     analyse(data)
