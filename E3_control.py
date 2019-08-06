@@ -22,6 +22,19 @@ import cPickle as pickle
 from pybar.daq import fifo_readout
 from pybar.daq import readout_utils as ru
 
+#thresholds to detect spills, hitrate peak and moving beam
+threshold_vars = {
+    "integration_time": 0.05,
+    "hitrate_peak" : 2.5,
+    "coloumn_variance" : 100,
+    "row_variance" : 500,
+    "reset_coloumn_row_arrays" : 100,
+    "beam_on" : 0.7,
+    "beam_off" : 0.2,
+    "start_analyse_hitrate_len" : 10,
+    "start_analyse_hitrate_sum" : 10000
+    }
+
 #ports for zmq
 conf = {
     "port_slow_control":5000,
@@ -36,7 +49,6 @@ global_vars = {
     "row":[],
     "hist_occ": None,
     "timestamp_start":[],
-    "integration_time": 0.05,
     "hitrate":[],
     "beam":True,
     "analyse":True,
@@ -44,7 +56,7 @@ global_vars = {
 
 
 #run configuration for self trigger scan
-run_conf = {
+run_conf_self = {
     "scan_timeout": None,
     "no_data_timeout": None,
     "reset_rx_on_error": False,
@@ -128,9 +140,9 @@ def slow_control():
                 
         if get_status() != "RUNNING" and msg == "START":
             fifo_readout.WRITE_INTERVAL = 0.05
-            Fei4SelfTriggerScan.run_conf = run_conf
+            Fei4SelfTriggerScan.run_conf = run_conf_self
             Fei4SelfTriggerScan.handle_data = handle_data
-            runmngr.run_run(run=Fei4SelfTriggerScan, run_conf=run_conf, use_thread=True)
+            runmngr.run_run(run=Fei4SelfTriggerScan, run_conf=run_conf_self, use_thread=True)
             time.sleep(1)
             socket.send("%s" % runmngr.current_run.run_id)
             socket.send(get_status())
@@ -244,12 +256,12 @@ def slow_control():
                     break
                     
         if msg == "framerate":
-            socket.send("old framerate:%1.1f" % float(1/ global_vars["integration_time"]))
+            socket.send("old framerate:%1.1f" % float(1/ threshold_vars["integration_time"]))
             socket.send("input new framerate:")
             msg = socket.recv()
             try:
                 global_vars["integration_time"] = 1 / float(msg)
-                socket.send("new framerate:%1.1f" % float(1/ global_vars["integration_time"]))
+                socket.send("new framerate:%1.1f" % float(1/ threshold_vars["integration_time"]))
             except:
                 socket.send("invalid input")
                 
@@ -275,28 +287,28 @@ def slow_control():
             ExtTriggerScan.run_conf=run_conf_ext
             ExtTriggerScan.handle_data=handle_data
             runmngr.run_run(run=ExtTriggerScan,run_conf=run_conf_ext, use_thread=True)
-            
+
         
 def analyse_beam(beam):
-    if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:                     
-        if global_vars["hitrate"][-1] > np.median(global_vars["hitrate"]) * 0.7:
+    if len(global_vars["hitrate"]) > threshold_vars["start_analyse_hitrate_len"] and sum(global_vars["hitrate"]) > threshold_vars["start_analyse_hitrate_sum"]:                     
+        if global_vars["hitrate"][-1] > np.median(global_vars["hitrate"]) * threshold_vars["beam_on"]:
             global_vars["baseline"].append(np.median(global_vars["hitrate"]))
             b = np.mean(global_vars["baseline"])
             if beam == False:
                 beam = True
                 socket.send("beam: on")
-            # detect hitrate burst if its over 250%   
-            if global_vars["hitrate"][-1] > 2.5 * b:
+            # detect hitrate burst if its over threshold_vars["hitrate_peak"]   
+            if global_vars["hitrate"][-1] > threshold_vars["hitrate_peak"] * b:
                 socket.send("Time: %s" % datetime.datetime.now().time())  
                 socket.send("hitrate peak: %.0f [Hz]" % global_vars["hitrate"][-1])  
-        if  global_vars["hitrate"][-1] < np.median(global_vars["hitrate"]) * 0.2:
+        if  global_vars["hitrate"][-1] < np.median(global_vars["hitrate"]) * threshold_vars["beam_off"]:
             if beam == True:
                 beam = False
                 socket.send("beam: off")
             # detect moving beamspot
         if beam:
             #Variance limit for row, coloumn
-            if np.var(global_vars["coloumn"]) > 100 or np.var(global_vars["row"]) > 500:
+            if np.var(global_vars["coloumn"]) > threshold_vars["coloumn_variance"] or np.var(global_vars["row"]) > threshold_vars["row_variance"]:
                 try:
                     socket.send("Time: %s" % datetime.datetime.now().time())
                     socket.send("Beam moved")
@@ -315,8 +327,8 @@ def is_record(value):
 def analyse(data_array):
     global global_vars
     
-    if global_vars["integration_time"] < 0.05:
-        global_vars["integration_time"] = 0.05
+    if threshold_vars["integration_time"] < 0.05:
+        threshold_vars["integration_time"] = 0.05
     for ro in data_array[0]:
         raw_data = ro[0]
         data_record = ru.convert_data_array(raw_data, filter_func=is_record)   
@@ -335,7 +347,7 @@ def analyse(data_array):
             else:
                 global_vars["hist_occ"] += fast_analysis_utils.hist_2d_index(col, row, shape=(81, 337))
         
-        if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
+        if timestamp_stop - global_vars["timestamp_start"][0] > threshold_vars["integration_time"]:
             global_vars["hitrate"].append(np.sum(global_vars["hits"]) / (timestamp_stop - global_vars["timestamp_start"][0]))
             
             if (runmngr.current_run.run_id == "fei4_self_trigger_scan" or runmngr.current_run.run_id == "ext_trigger_scan") and global_vars["analyse"]:
@@ -350,7 +362,7 @@ def analyse(data_array):
             global_vars["hist_occ"] = None
             #single variance gets diminished for long mesurements, this resets the variables after some time
             #diminishing the number leads to more sensitivity
-            if len(global_vars["coloumn"])>100:
+            if len(global_vars["coloumn"])>threshold_vars["reset_coloumn_row_arrays"]:
                     del global_vars["coloumn"][:]
                     del global_vars["row"][:]
             
