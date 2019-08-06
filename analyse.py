@@ -13,6 +13,20 @@ from basil.utils.BitLogic import BitLogic
 from pybar_fei4_interpreter.data_interpreter import PyDataInterpreter
 from pybar_fei4_interpreter.data_histograming import PyDataHistograming
 
+#thresholds to detect spills, hitrate peak and moving beam
+threshold_vars = {
+    "integration_time": 0.1,
+    "hitrate_peak" : 2.5,
+    "coloumn_variance" : 100,
+    "row_variance" : 500,
+    "reset_coloumn_row_arrays" : 100,
+    "beam_on" : 0.7,
+    "beam_off" : 0.2,
+    "start_analyse_hitrate_len" : 10,
+    "start_analyse_hitrate_sum" : 10000
+    }
+
+#ports for zmq
 conf = {
     "port_slow_control":5000,
     "port_hit_map":5002,
@@ -26,7 +40,6 @@ global_vars = {
     "row":[],
     "hist_occ": None,
     "timestamp_start":[],
-    "integration_time": 0.05,
     "hitrate":[],
     "beam":True,
     "time":[],
@@ -53,13 +66,13 @@ def is_record(value):
 def analyse():
     global global_vars
     
-#     if global_vars["integration_time"] < 0.05:
-#         global_vars["integration_time"] = 0.05
+    if threshold_vars["integration_time"] < 0.05:
+        threshold_vars["integration_time"] = 0.05
 
 
  
     rep = Replay() 
-    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/moving_beam/24_module_0_fei4_self_trigger_scan.h5", real_time=False))):
+    for i, ro in enumerate(tqdm(rep.get_data(r"/home/rasmus/Documents/Rasmus/110_mimosa_telescope_testbeam_14122016_fei4_self_trigger_scan.h5", real_time=True))):
     
         raw_data = ro[0]
         
@@ -89,7 +102,7 @@ def analyse():
             if len(global_vars["time"]) == 0:
                 global_vars["time"].append(0)
 
-            if timestamp_stop - global_vars["timestamp_start"][0] > global_vars["integration_time"]:
+            if timestamp_stop - global_vars["timestamp_start"][0] > threshold_vars["integration_time"]:
                 global_vars["time"].append(global_vars["time"][-1] + timestamp_stop - global_vars["timestamp_start"][0])
                 global_vars["c"].append(np.var(global_vars["coloumn"]))
                 global_vars["r"].append(np.var(global_vars["row"]))
@@ -104,38 +117,36 @@ def analyse():
                 del global_vars["hits"][:]
                 del global_vars["timestamp_start"][:]
                 global_vars["hist_occ"] = None
-                if len(global_vars["coloumn"])>100:
+                if len(global_vars["coloumn"])>threshold_vars["reset_coloumn_row_arrays"]:
                     del global_vars["coloumn"][:]
                     del global_vars["row"][:]
 
 def analyse_beam(beam):
-    if len(global_vars["hitrate"]) > 10 and sum(global_vars["hitrate"]) > 10000:
-        if global_vars["hitrate"][-1] > np.median(global_vars["hitrate"]) * 0.7:
+    if len(global_vars["hitrate"]) > threshold_vars["start_analyse_hitrate_len"] and sum(global_vars["hitrate"]) > threshold_vars["start_analyse_hitrate_sum"]:                     
+        if global_vars["hitrate"][-1] > np.median(global_vars["hitrate"]) * threshold_vars["beam_on"]:
             global_vars["baseline"].append(np.median(global_vars["hitrate"]))
             b = np.mean(global_vars["baseline"])
             if beam == False:
                 beam = True
                 socket.send("beam: on")
-            if global_vars["hitrate"][-1] > 2.5 * b:  # Hitrate Peak               
-                socket.send("hitrate peak: %.0f [Hz]" % global_vars["hitrate"][-1])      
-        if  global_vars["hitrate"][-1] < np.median(global_vars["hitrate"]) * 0.2:
+            # detect hitrate burst if its over threshold_vars["hitrate_peak"]   
+            if global_vars["hitrate"][-1] > threshold_vars["hitrate_peak"] * b:
+                socket.send("hitrate peak: %.0f [Hz]" % global_vars["hitrate"][-1])  
+        if  global_vars["hitrate"][-1] < np.median(global_vars["hitrate"]) * threshold_vars["beam_off"]:
             if beam == True:
                 beam = False
                 socket.send("beam: off")
+            # detect moving beamspot
         if beam:
-            global_vars["beamspot"].append(np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.25) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.05) ** 2))
-    
-            if np.var(global_vars["coloumn"]) > 100 or np.var(global_vars["row"]) > 500:
+            #Variance limit for row, coloumn
+            if np.var(global_vars["coloumn"]) > threshold_vars["coloumn_variance"] or np.var(global_vars["row"]) > threshold_vars["row_variance"]:
                 try:
-                    socket.send("Beamspot moved %0.2f mm" % np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.250) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.050) ** 2))
-                    socket.send("Time: %s" % global_vars["time"][-1])
+                    socket.send("Beam moved")
+                    socket.send("Beamspot moved %0.2f mm" % np.sqrt(((global_vars["coloumn"][-1] - np.median(global_vars["coloumn"]))*0.25) ** 2 + ((global_vars["row"][-1] - np.median(global_vars["row"]))*0.05) ** 2))
                     del global_vars["coloumn"][:]
                     del global_vars["row"][:]
                 except:
                     pass
-#                 socket.send("from %s" % [int(global_vars["coloumn"][-2]), int(global_vars["row"][-2])])
-#                 socket.send("to     %s" % [int(global_vars["coloumn"][-1]), int(global_vars["row"][-1])])
-
     return beam
 
 
@@ -146,43 +157,59 @@ if __name__ == "__main__":
     # Plot Data
     global_vars["time"].remove(0)
 #     plt.subplot(3,1,1)
-#     plt.plot(global_vars["time"],global_vars["hitrate"])
-#     plt.xlabel("Time [s]")
-#     plt.ylabel("Hitrate [Hz]")
-#     plt.hlines(np.mean(global_vars["baseline"]),xmin=0,xmax=40, colors='k', linestyles='solid', label='baseline')
-#     plt.hlines(np.mean(global_vars["baseline"])*0.7,xmin=0,xmax=40, colors='r', linestyles='solid', label='baseline')
-#     plt.hlines(np.mean(global_vars["baseline"])*0.2,xmin=0,xmax=40, colors='g', linestyles='solid', label='baseline')
+    plt.plot(global_vars["time"],global_vars["hitrate"])
+    plt.xlabel("Zeit [s]")
+    plt.ylabel("Trefferrate [Hz]")
+#     plt.hlines(np.mean(global_vars["baseline"]),xmin=0,xmax=523, colors='k', linestyles='solid', label='baseline')
+#     plt.hlines(np.mean(global_vars["baseline"])*0.7,xmin=0,xmax=523, colors='r', linestyles='solid', label='baseline')
+#     plt.hlines(np.mean(global_vars["baseline"])*0.2,xmin=0,xmax=523, colors='g', linestyles='solid', label='baseline')
 #     plt.title("baselines")
+
+#     plt.subplot(2,1,1)
+#     plt.hist(global_vars["c"],bins=100)
+#     plt.ylabel("Anzahl Ereignisse")
+#     plt.xlabel("Zeilen Varianz")
+#     plt.subplot(2,1,2)
+#     plt.hist(global_vars["r"],bins=100)
+#     plt.ylabel("Anzahl Ereignisse")
+#     plt.xlabel("Reihen Varianz")
+      
 #     plt.subplot(2,1,1)
 #     plt.plot(global_vars["time"],global_vars["c"])
-#     plt.ylabel("var coloumn")
-#     plt.xlabel("Time [s]")
+#     plt.ylabel("Zeilen median")
+#     plt.xlabel("Zeit [s]")
 #     plt.subplot(2,1,2)
 #     plt.plot(global_vars["time"],global_vars["r"])
-#     plt.ylabel("var row")
-#     plt.xlabel("Time [s]")
+#     plt.ylabel("Reihen median")
+#     plt.xlabel("Zeit [s]")
+      
+      
+#     plt.hist(global_vars["hitrate"],bins=100)
+#     plt.xlabel("Trefferrate [Hz]")
+#     plt.ylabel("Anzahl Ereignisse")
+      
       
 #     plt.subplot(5,1,3)
 #     plt.plot(global_vars["time"], global_vars["beamspot"])
 #     plt.xlabel("Time [s]")
 #     plt.ylabel("beamspot moving [pixel")   
-#     plt.hist(global_vars["beamspot"],bins=100)
-#     plt.xlabel("beamspot moving [mm]")
-#     plt.ylabel("occurence")  
-
+#     plt.hist(global_vars["beamspot"],bins=30)
+#     plt.xlabel("Strahl Bewegung [mm]")
+#     plt.ylabel("Anzahl Ereignisse")  
+  
     # Plot Contour Plot of Data
 #     fig, ax = plt.subplots()
 #     CS = ax.contour(global_vars["hist_occ"])
 #     ax.grid(linewidth=0.5)
-#     plt.xlabel("coloumn")
-#     plt.ylabel("row")
+#     plt.xlabel("Spalte")
+#     plt.ylabel("Reihe")
 #     #plt.colorbar(CS)
-#    
+# #    
 #     plt.imshow(global_vars["hist_occ"], aspect="auto")
-#     plt.xlabel("coloumn")
-#     plt.ylabel("row")
-#     plt.colorbar()
-#     plt.title("Hit Occurence")
+#     plt.xlabel("Spalte")
+#     plt.ylabel("Reihe")
+#     cbar=plt.colorbar()
+#     cbar.set_label('Anzahl Ereignisse', rotation=90, labelpad=15)
 
     # plt.plot(hits_per_event)
     # plt.plot(hist_hit)
