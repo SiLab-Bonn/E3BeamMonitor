@@ -138,7 +138,7 @@ def slow_control():
                 socket.send("Failed to initialize")
             add_done_message()
                 
-        if get_status() != "RUNNING" and msg == "START":
+        if get_status() != "RUNNING" and msg == "startself":
             fifo_readout.WRITE_INTERVAL = 0.05
             Fei4SelfTriggerScan.run_conf = run_conf_self
             Fei4SelfTriggerScan.handle_data = handle_data
@@ -147,7 +147,7 @@ def slow_control():
             socket.send("%s" % runmngr.current_run.run_id)
             socket.send(get_status())
             
-        if get_status() == "RUNNING" and msg == "STOP":
+        if get_status() == "RUNNING" and msg == "stop":
             runmngr.cancel_current_run(msg)
             fifo_readout.WRITE_INTERVAL = 1
             del_var()
@@ -161,7 +161,7 @@ def slow_control():
             socket.send("Program terminates")
             break
             
-        if get_status() != "RUNNING" and msg == "TUNE":
+        if get_status() != "RUNNING" and msg == "tune":
             socket.send("Start GdacTuning")
             runmngr.run_run(GdacTuning, run_conf=tuning_conf, use_thread=True)
             while True:
@@ -192,11 +192,11 @@ def slow_control():
                     add_done_message()
                     break
 
-        if get_status() != "RUNNING" and msg == "sanalog":
+        if get_status() != "RUNNING" and msg == "startanalog":
             socket.send("Start Analog Scan")
             runmngr.run_run(AnalogScan, use_thread=True)
    
-        if get_status() != "RUNNING" and msg == "sdigital":
+        if get_status() != "RUNNING" and msg == "startdigital":
             socket.send("Start Digital Scan")
             runmngr.run_run(DigitalScan, use_thread=True)
             
@@ -282,7 +282,7 @@ def slow_control():
             else:
                 global_vars["analyse"] = True
 
-        if get_status() != "RUNNING" and msg == "external":
+        if get_status() != "RUNNING" and msg == "startexternal":
             fifo_readout.WRITE_INTERVAL = 0.05
             ExtTriggerScan.run_conf=run_conf_ext
             ExtTriggerScan.handle_data=handle_data
